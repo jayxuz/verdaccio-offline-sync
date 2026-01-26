@@ -7,6 +7,14 @@
 [![npm version - offline-storage](https://img.shields.io/npm/v/@jayxuz/verdaccio-offline-storage.svg?label=offline-storage)](https://www.npmjs.com/package/@jayxuz/verdaccio-offline-storage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+<p align="center">
+  <img src="./pic/web-ui.png" alt="Web UI" width="80%">
+</p>
+
+<p align="center">
+  <img src="./pic/diff-export.png" alt="Differential Export" width="80%">
+</p>
+
 **Verdaccio 离线 NPM 依赖管理插件套件** - 专为内外网隔离环境设计的 npm 包同步解决方案。
 
 ## 核心特性

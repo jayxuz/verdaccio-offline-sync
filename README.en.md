@@ -7,6 +7,14 @@ English | [中文](./README.md)
 [![npm version - offline-storage](https://img.shields.io/npm/v/@jayxuz/verdaccio-offline-storage.svg?label=offline-storage)](https://www.npmjs.com/package/@jayxuz/verdaccio-offline-storage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+<p align="center">
+  <img src="./pic/web-ui.png" alt="Web UI" width="80%">
+</p>
+
+<p align="center">
+  <img src="./pic/diff-export.png" alt="Differential Export" width="80%">
+</p>
+
 **Verdaccio Offline NPM Dependency Management Plugin Suite** - An npm package synchronization solution designed for air-gapped environments.
 
 ## Key Features
