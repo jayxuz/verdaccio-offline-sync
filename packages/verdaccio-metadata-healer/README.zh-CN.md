@@ -61,6 +61,8 @@ filters:
 ```yaml
 middlewares:
   metadata-healer:
+    enabled: true
+    enableImportUI: true
     # 存储路径（可选，默认使用 Verdaccio 存储路径）
     storagePath: /path/to/storage
 ```

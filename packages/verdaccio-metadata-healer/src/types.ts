@@ -10,6 +10,10 @@ export interface HealerConfig {
   shasumCacheSize?: number;
   autoUpdateLatest?: boolean;
   host?: string;
+  /** 是否启用导入 Web UI（需要在 middlewares 中配置） */
+  enableImportUI?: boolean;
+  /** Web UI 标题 */
+  title?: string;
 }
 
 /**

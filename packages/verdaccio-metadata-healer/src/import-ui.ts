@@ -231,8 +231,8 @@ export function getImportUIHTML(config: any): string {
       border-radius: 6px;
       font-size: 12px;
       font-weight: normal;
-      white-space: nowrap;
-      max-width: 280px;
+      min-width: 200px;
+      max-width: 400px;
       white-space: normal;
       text-align: left;
       z-index: 1000;

@@ -61,6 +61,8 @@ Add to your Verdaccio `config.yaml`:
 ```yaml
 middlewares:
   metadata-healer:
+    enabled: true
+    enableImportUI: true
     # Storage path (optional, defaults to Verdaccio storage)
     storagePath: /path/to/storage
 ```
