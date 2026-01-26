@@ -7,13 +7,6 @@ English | [中文](./README.md)
 [![npm version - offline-storage](https://img.shields.io/npm/v/@jayxuz/verdaccio-offline-storage.svg?label=offline-storage)](https://www.npmjs.com/package/@jayxuz/verdaccio-offline-storage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-<p align="center">
-  <img src="./pic/web-ui.png" alt="Web UI" width="80%">
-</p>
-
-<p align="center">
-  <img src="./pic/diff-export.png" alt="Differential Export" width="80%">
-</p>
 
 **Verdaccio Offline NPM Dependency Management Plugin Suite** - An npm package synchronization solution designed for air-gapped environments.
 
@@ -35,53 +28,23 @@ English | [中文](./README.md)
 | `verdaccio-ingest-middleware` | Online | Recursive ingestion middleware with Web UI and differential export |
 | `verdaccio-metadata-healer` | Offline | Metadata self-healing filter with differential import |
 
-## Architecture
+### Web UI Management Interface
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Online Environment                              │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  Verdaccio + offline-storage + ingest-middleware            │   │
-│  │                                                             │   │
-│  │  Web UI: http://external:4873/_/ingest/ui                   │   │
-│  │  ├── View cache status                                      │   │
-│  │  ├── Analyze deps → Confirm download list → Execute         │   │
-│  │  ├── Real-time progress (percentage, ETA, current package)  │   │
-│  │  └── 📤 Differential export (time-based incremental)        │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                              │                                      │
-│                              ▼                                      │
-│                    storage/ directory                               │
-│                    ├── react/                                       │
-│                    │   ├── package.json                             │
-│                    │   └── react-18.2.0.tgz                         │
-│                    ├── @esbuild%2flinux-x64/                        │
-│                    │   └── linux-x64-0.19.0.tgz                     │
-│                    ├── .export-history.json  ← Export history       │
-│                    └── .exports/             ← Export packages      │
-│                        └── diff-export-2024-01-15T10-30-00.tar.gz   │
-└─────────────────────────────────────────────────────────────────────┘
-                               │
-                               │ Method 1: rsync -avz --ignore-existing
-                               │ Method 2: Download diff package → Import
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Offline Environment                             │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  Verdaccio + offline-storage + metadata-healer              │   │
-│  │                                                             │   │
-│  │  Import UI: http://internal:4873/_/healer/ui                │   │
-│  │  ├── 📥 Upload differential package                         │   │
-│  │  ├── Import options (overwrite/validate/rebuild metadata)   │   │
-│  │  └── Import history                                         │   │
-│  │                                                             │   │
-│  │  npm install react --registry http://internal:4873          │   │
-│  │  ├── offline-storage resolves versions locally              │   │
-│  │  ├── metadata-healer dynamically repairs missing metadata   │   │
-│  │  └── Auto-selects platform-specific binaries                │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="./pic/web-ui.png" alt="Web UI" width="80%">
+</p>
+
+### Differential Export
+
+<p align="center">
+  <img src="./pic/diff-export.png" alt="Differential Export" width="80%">
+</p>
+
+### Differential Import
+
+<p align="center">
+  <img src="./pic/diff-import.png" alt="Differential Import" width="80%">
+</p>
 
 ## Quick Start
 
@@ -178,8 +141,9 @@ filters:
 
 # Enable import middleware (optional, for Web UI import)
 middlewares:
-  import-middleware:
+  metadata-healer:
     enabled: true
+    enableImportUI: true
 ```
 
 ## Web UI Guide
@@ -310,6 +274,54 @@ Access `http://internal:4873/_/healer/ui` to open the import management interfac
 | Validate Checksums | Verify SHA256 for each file |
 | Import Files | Copy files to storage directory |
 | Rebuild Metadata | Trigger automatic metadata rebuild |
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Online Environment                              │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  Verdaccio + offline-storage + ingest-middleware            │   │
+│  │                                                             │   │
+│  │  Web UI: http://external:4873/_/ingest/ui                   │   │
+│  │  ├── View cache status                                      │   │
+│  │  ├── Analyze deps → Confirm download list → Execute         │   │
+│  │  ├── Real-time progress (percentage, ETA, current package)  │   │
+│  │  └── 📤 Differential export (time-based incremental)        │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              │                                      │
+│                              ▼                                      │
+│                    storage/ directory                               │
+│                    ├── react/                                       │
+│                    │   ├── package.json                             │
+│                    │   └── react-18.2.0.tgz                         │
+│                    ├── @esbuild%2flinux-x64/                        │
+│                    │   └── linux-x64-0.19.0.tgz                     │
+│                    ├── .export-history.json  ← Export history       │
+│                    └── .exports/             ← Export packages      │
+│                        └── diff-export-2024-01-15T10-30-00.tar.gz   │
+└─────────────────────────────────────────────────────────────────────┘
+                               │
+                               │ Method 1: rsync -avz --ignore-existing
+                               │ Method 2: Download diff package → Import
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Offline Environment                             │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  Verdaccio + offline-storage + metadata-healer              │   │
+│  │                                                             │   │
+│  │  Import UI: http://internal:4873/_/healer/ui                │   │
+│  │  ├── 📥 Upload differential package                         │   │
+│  │  ├── Import options (overwrite/validate/rebuild metadata)   │   │
+│  │  └── Import history                                         │   │
+│  │                                                             │   │
+│  │  npm install react --registry http://internal:4873          │   │
+│  │  ├── offline-storage resolves versions locally              │   │
+│  │  ├── metadata-healer dynamically repairs missing metadata   │   │
+│  │  └── Auto-selects platform-specific binaries                │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ## API Endpoints
 
