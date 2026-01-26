@@ -1,0 +1,49 @@
+{
+  "name": "verdaccio-ingest-middleware",
+  "version": "1.0.0",
+  "description": "Verdaccio middleware plugin for recursive package ingestion with multi-platform support",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf build",
+    "prepublishOnly": "npm run build",
+    "test": "jest"
+  },
+  "keywords": [
+    "verdaccio",
+    "plugin",
+    "middleware",
+    "offline",
+    "npm",
+    "registry"
+  ],
+  "dependencies": {
+    "@npmcli/arborist": "^7.0.0",
+    "pacote": "^18.0.0",
+    "semver": "^7.5.0",
+    "p-limit": "^3.1.0",
+    "lru-cache": "^10.0.0",
+    "tar": "^6.2.0"
+  },
+  "devDependencies": {
+    "@verdaccio/types": "13.0.0-next-8.10",
+    "@verdaccio/core": "8.0.0-next-8.28",
+    "@types/jsonwebtoken": "^9.0.0",
+    "@types/node": "^20.0.0",
+    "@types/express": "^4.17.0",
+    "@types/semver": "^7.5.0",
+    "@types/tar": "^6.1.11",
+    "typescript": "^5.3.0"
+  },
+  "peerDependencies": {
+    "verdaccio": ">=5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/jayxuz/verdaccio-offline-sync/packages/verdaccio-ingest-middleware",
+  "author": "jayxuz",
+  "homepage": "https://github.com/jayxuz/verdaccio-offline-sync/packages/verdaccio-ingest-middleware"
+}

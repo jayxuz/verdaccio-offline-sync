@@ -1,0 +1,25 @@
+{
+  "name": "verdaccio-offline-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Verdaccio plugins for offline NPM dependency management",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r build",
+    "clean": "pnpm -r clean",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/jayxuz/verdaccio-offline-sync",
+  "author": "jayxuz",
+  "homepage": "https://github.com/jayxuz/verdaccio-offline-sync"
+}
