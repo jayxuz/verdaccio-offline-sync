@@ -19,7 +19,7 @@
 
 | 插件 | 部署位置 | 功能 |
 |------|----------|------|
-| `verdaccio-offline-storage` | 外网/内网 | 基础存储层，支持离线版本解析 |
+| `@jayxuz/verdaccio-offline-storage` | 外网/内网 | 基础存储层，支持离线版本解析 |
 | `verdaccio-ingest-middleware` | 外网 | 递归摄取中间件，提供 Web UI，支持差分导出 |
 | `verdaccio-metadata-healer` | 内网 | 元数据自愈过滤器，支持差分导入 |
 
@@ -77,7 +77,7 @@
 
 ```bash
 # 安装离线存储插件（必需）
-npm install -g verdaccio-offline-storage
+npm install -g @jayxuz/verdaccio-offline-storage
 ```
 
 ### 2. 安装插件
