@@ -7,6 +7,18 @@ English | [中文](./README.md)
 [![npm version - offline-storage](https://img.shields.io/npm/v/@jayxuz/verdaccio-offline-storage.svg?label=offline-storage)](https://www.npmjs.com/package/@jayxuz/verdaccio-offline-storage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+> **Say Goodbye to Air-Gapped Dependency Nightmares**
+>
+> Still manually zipping `node_modules` and praying it works after extraction?
+> Still re-importing the project's full dependency bundle just to update one package?
+> Still pulling your hair out over platform compatibility issues with esbuild, sharp, and other native modules?
+> Still staring at `npm install` errors wondering which dependency is missing?
+>
+> **Verdaccio Offline Sync** makes npm dependency synchronization between networks simple:
+> - Smart dependency tree analysis, one-click download of all missing packages
+> - Incremental export, only transfer new and changed files
+> - Automatic handling of multi-platform binaries
+> - Self-healing metadata, import and use immediately
 
 **Verdaccio Offline NPM Dependency Management Plugin Suite** - An npm package synchronization solution designed for air-gapped environments.
 

@@ -7,6 +7,19 @@
 [![npm version - offline-storage](https://img.shields.io/npm/v/@jayxuz/verdaccio-offline-storage.svg?label=offline-storage)](https://www.npmjs.com/package/@jayxuz/verdaccio-offline-storage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+> **告别内网依赖管理的噩梦**
+>
+> 还在手动打包 `node_modules` 然后祈祷解压后能正常工作吗？
+> 还在为了更新一个包版本而重新导入整个项目的依赖包吗？
+> 还在为 esbuild、sharp 等原生模块的平台兼容问题抓狂吗？
+> 还在面对 `npm install` 报错时不知道到底缺了哪个依赖吗？
+>
+> **Verdaccio Offline Sync** 让内外网 npm 依赖同步变得简单：
+> - 智能分析依赖树，一键下载所有缺失的包
+> - 增量导出，只传输新增和变更的文件
+> - 自动处理多平台二进制包
+> - 元数据自愈，导入即可用
+
 **Verdaccio 离线 NPM 依赖管理插件套件** - 专为内外网隔离环境设计的 npm 包同步解决方案。
 
 ## 核心特性
