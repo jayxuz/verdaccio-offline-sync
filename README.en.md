@@ -72,7 +72,7 @@ npm install -g verdaccio-metadata-healer
 storage: /verdaccio/storage/data
 
 store:
-  offline-storage:
+  '@jayxuz/verdaccio-offline-storage':
     offline: false
 
 uplinks:
@@ -121,7 +121,7 @@ middlewares:
 storage: /verdaccio/storage/data
 
 store:
-  offline-storage:
+  '@jayxuz/verdaccio-offline-storage':
     offline: true  # Force offline mode
 
 packages:
