@@ -1,6 +1,10 @@
 # Verdaccio Offline Sync
 
-[![npm version](https://img.shields.io/npm/v/verdaccio-ingest-middleware.svg)](https://www.npmjs.com/package/verdaccio-ingest-middleware)
+[English](./README.en.md) | 中文
+
+[![npm version - ingest-middleware](https://img.shields.io/npm/v/verdaccio-ingest-middleware.svg?label=ingest-middleware)](https://www.npmjs.com/package/verdaccio-ingest-middleware)
+[![npm version - metadata-healer](https://img.shields.io/npm/v/verdaccio-metadata-healer.svg?label=metadata-healer)](https://www.npmjs.com/package/verdaccio-metadata-healer)
+[![npm version - offline-storage](https://img.shields.io/npm/v/@jayxuz/verdaccio-offline-storage.svg?label=offline-storage)](https://www.npmjs.com/package/@jayxuz/verdaccio-offline-storage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **Verdaccio 离线 NPM 依赖管理插件套件** - 专为内外网隔离环境设计的 npm 包同步解决方案。
