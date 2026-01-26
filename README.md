@@ -5,6 +5,8 @@
 [![npm version - ingest-middleware](https://img.shields.io/npm/v/verdaccio-ingest-middleware.svg?label=ingest-middleware)](https://www.npmjs.com/package/verdaccio-ingest-middleware)
 [![npm version - metadata-healer](https://img.shields.io/npm/v/verdaccio-metadata-healer.svg?label=metadata-healer)](https://www.npmjs.com/package/verdaccio-metadata-healer)
 [![npm version - offline-storage](https://img.shields.io/npm/v/@jayxuz/verdaccio-offline-storage.svg?label=offline-storage)](https://www.npmjs.com/package/@jayxuz/verdaccio-offline-storage)
+[![Docker Image Version](https://img.shields.io/docker/v/jayxuz/verdaccio-offline-sync?label=docker)](https://hub.docker.com/r/jayxuz/verdaccio-offline-sync)
+[![Docker Pulls](https://img.shields.io/docker/pulls/jayxuz/verdaccio-offline-sync)](https://hub.docker.com/r/jayxuz/verdaccio-offline-sync)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > **告别内网依赖管理的噩梦**
@@ -61,14 +63,47 @@
 
 ## 快速开始
 
-### 1. 安装前置依赖
+### 使用 Docker 镜像（推荐）
+
+我们提供了预构建的 Docker 镜像，包含所有插件，开箱即用：
+
+```bash
+# 设置数据目录
+export V_PATH=/path/to/verdaccio
+
+# 启动容器
+docker run -it --name verdaccio \
+  -p 4873:4873 \
+  -v $V_PATH/conf:/verdaccio/conf \
+  -v $V_PATH/storage:/verdaccio/storage \
+  jayxuz/verdaccio-offline-sync
+```
+
+目录结构：
+```
+$V_PATH/
+├── conf/
+│   └── config.yaml    # 配置文件（外网或内网配置）
+└── storage/
+    └── data/          # 包存储目录
+```
+
+> 提示：通过挂载不同的配置文件来区分外网/内网环境，参考下方的配置示例。
+
+---
+
+### 手动安装
+
+如果不使用 Docker，可以手动安装插件：
+
+#### 1. 安装前置依赖
 
 ```bash
 # 安装离线存储插件（必需）
 npm install -g @jayxuz/verdaccio-offline-storage
 ```
 
-### 2. 安装插件
+#### 2. 安装插件
 
 ```bash
 # 外网环境
@@ -78,7 +113,7 @@ npm install -g verdaccio-ingest-middleware
 npm install -g verdaccio-metadata-healer
 ```
 
-### 3. 配置外网 Verdaccio
+### 配置外网 Verdaccio
 
 ```yaml
 # config-external.yaml
@@ -127,7 +162,7 @@ middlewares:
       maxDepth: 10
 ```
 
-### 4. 配置内网 Verdaccio
+### 配置内网 Verdaccio
 
 ```yaml
 # config-internal.yaml

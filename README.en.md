@@ -5,6 +5,8 @@ English | [中文](./README.md)
 [![npm version - ingest-middleware](https://img.shields.io/npm/v/verdaccio-ingest-middleware.svg?label=ingest-middleware)](https://www.npmjs.com/package/verdaccio-ingest-middleware)
 [![npm version - metadata-healer](https://img.shields.io/npm/v/verdaccio-metadata-healer.svg?label=metadata-healer)](https://www.npmjs.com/package/verdaccio-metadata-healer)
 [![npm version - offline-storage](https://img.shields.io/npm/v/@jayxuz/verdaccio-offline-storage.svg?label=offline-storage)](https://www.npmjs.com/package/@jayxuz/verdaccio-offline-storage)
+[![Docker Image Version](https://img.shields.io/docker/v/jayxuz/verdaccio-offline-sync?label=docker)](https://hub.docker.com/r/jayxuz/verdaccio-offline-sync)
+[![Docker Pulls](https://img.shields.io/docker/pulls/jayxuz/verdaccio-offline-sync)](https://hub.docker.com/r/jayxuz/verdaccio-offline-sync)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > **Say Goodbye to Air-Gapped Dependency Nightmares**
@@ -60,14 +62,47 @@ English | [中文](./README.md)
 
 ## Quick Start
 
-### 1. Install Prerequisites
+### Using Docker Image (Recommended)
+
+We provide a pre-built Docker image with all plugins included, ready to use:
+
+```bash
+# Set data directory
+export V_PATH=/path/to/verdaccio
+
+# Start container
+docker run -it --name verdaccio \
+  -p 4873:4873 \
+  -v $V_PATH/conf:/verdaccio/conf \
+  -v $V_PATH/storage:/verdaccio/storage \
+  jayxuz/verdaccio-offline-sync
+```
+
+Directory structure:
+```
+$V_PATH/
+├── conf/
+│   └── config.yaml    # Configuration file (online or offline config)
+└── storage/
+    └── data/          # Package storage directory
+```
+
+> Tip: Use different configuration files to distinguish between online/offline environments. See configuration examples below.
+
+---
+
+### Manual Installation
+
+If not using Docker, you can install plugins manually:
+
+#### 1. Install Prerequisites
 
 ```bash
 # Install offline storage plugin (required)
 npm install -g @jayxuz/verdaccio-offline-storage
 ```
 
-### 2. Install Plugins
+#### 2. Install Plugins
 
 ```bash
 # Online environment
@@ -77,7 +112,7 @@ npm install -g verdaccio-ingest-middleware
 npm install -g verdaccio-metadata-healer
 ```
 
-### 3. Configure Online Verdaccio
+### Configure Online Verdaccio
 
 ```yaml
 # config-external.yaml
@@ -126,7 +161,7 @@ middlewares:
       maxDepth: 10
 ```
 
-### 4. Configure Offline Verdaccio
+### Configure Offline Verdaccio
 
 ```yaml
 # config-internal.yaml
