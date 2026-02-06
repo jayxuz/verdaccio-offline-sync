@@ -373,8 +373,7 @@ export class PackageDownloader {
    * 获取包的存储路径
    */
   private getPackagePath(packageName: string): string {
-    const safeName = packageName.replace('/', '%2f');
-    return path.join(this.storagePath, safeName);
+    return path.join(this.storagePath, packageName);
   }
 
   /**

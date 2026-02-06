@@ -9,6 +9,8 @@ export interface HealerConfig {
   scanCacheTTL?: number;
   shasumCacheSize?: number;
   autoUpdateLatest?: boolean;
+  /** 是否在 filter_metadata 时自动保存元数据到本地（默认 true） */
+  autoSaveMetadata?: boolean;
   host?: string;
   /** 是否启用导入 Web UI（需要在 middlewares 中配置） */
   enableImportUI?: boolean;

@@ -133,9 +133,12 @@ export class DifferentialScanner {
    * 从目录路径提取包名
    */
   private extractPackageName(relativePath: string): string {
-    // 处理 scoped 包：@scope%2fpackage -> @scope/package
-    const dirName = relativePath.split(path.sep)[0] || relativePath;
-    return dirName.replace('%2f', '/');
+    const parts = relativePath.split(path.sep);
+    // 处理 scoped 包：嵌套结构 @scope/package -> 取前两段
+    if (parts[0] && parts[0].startsWith('@') && parts.length >= 2) {
+      return `${parts[0]}/${parts[1]}`;
+    }
+    return parts[0] || relativePath;
   }
 
   /**

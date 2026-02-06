@@ -18,6 +18,11 @@ export class StorageScanner {
     this.config = config;
     this.storagePath = storagePath;
     this.logger = logger;
+
+    this.logger.info(
+      { storagePath },
+      '[StorageScanner] Initialized with storage path: @{storagePath}'
+    );
   }
 
   /**
@@ -27,7 +32,17 @@ export class StorageScanner {
     const packages: CachedPackage[] = [];
 
     try {
+      this.logger.info(
+        { storagePath: this.storagePath },
+        '[StorageScanner] Scanning storage directory: @{storagePath}'
+      );
+
       const entries = await readdir(this.storagePath, { withFileTypes: true });
+
+      this.logger.info(
+        { count: entries.length, entries: entries.map(e => e.name).slice(0, 20).join(', ') },
+        '[StorageScanner] Found @{count} entries in storage: @{entries}...'
+      );
 
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
@@ -37,6 +52,10 @@ export class StorageScanner {
 
         // 处理 scoped 包 (@scope/package)
         if (entry.name.startsWith('@')) {
+          this.logger.debug(
+            { scope: entry.name },
+            '[StorageScanner] Scanning scoped packages in @{scope}'
+          );
           const scopedPackages = await this.scanScopedPackages(entry.name);
           packages.push(...scopedPackages);
         } else {
@@ -69,6 +88,11 @@ export class StorageScanner {
     try {
       const entries = await readdir(scopePath, { withFileTypes: true });
 
+      this.logger.info(
+        { scope, scopePath, count: entries.length, entries: entries.map(e => e.name).slice(0, 10).join(', ') },
+        '[StorageScanner] Scanning scope @{scope} at @{scopePath}: found @{count} entries: @{entries}'
+      );
+
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
 
@@ -76,8 +100,22 @@ export class StorageScanner {
         const pkg = await this.scanPackage(packageName);
         if (pkg) {
           packages.push(pkg);
+          this.logger.debug(
+            { packageName, versions: pkg.versions.length },
+            '[StorageScanner] Found package @{packageName} with @{versions} versions'
+          );
+        } else {
+          this.logger.debug(
+            { packageName },
+            '[StorageScanner] Package @{packageName} has no .tgz files, skipping'
+          );
         }
       }
+
+      this.logger.info(
+        { scope, found: packages.length },
+        '[StorageScanner] Scope @{scope}: found @{found} packages with .tgz files'
+      );
     } catch (error: any) {
       this.logger.warn(
         { scope, error: error.message },
@@ -100,13 +138,24 @@ export class StorageScanner {
       let dependencies: Record<string, string> = {};
       let latestVersion: string | undefined;
 
+      // 找出所有 .tgz 文件
+      const tgzFiles = files.filter(f => f.endsWith('.tgz'));
+
+      this.logger.debug(
+        { packageName, packagePath, totalFiles: files.length, tgzCount: tgzFiles.length, tgzFiles: tgzFiles.slice(0, 5).join(', ') },
+        '[StorageScanner] Scanning package @{packageName} at @{packagePath}: @{totalFiles} files, @{tgzCount} .tgz files: @{tgzFiles}'
+      );
+
       // 扫描 .tgz 文件获取版本列表
-      for (const file of files) {
-        if (file.endsWith('.tgz')) {
-          const version = this.extractVersionFromFilename(packageName, file);
-          if (version) {
-            versions.push(version);
-          }
+      for (const file of tgzFiles) {
+        const version = this.extractVersionFromFilename(packageName, file);
+        if (version) {
+          versions.push(version);
+        } else {
+          this.logger.debug(
+            { packageName, file },
+            '[StorageScanner] Could not extract version from @{file} for @{packageName}'
+          );
         }
       }
 
@@ -148,11 +197,19 @@ export class StorageScanner {
 
   /**
    * 获取包的存储路径
+   * 支持两种目录结构：
+   * 1. 嵌套结构: @babel/core (Verdaccio 默认)
+   * 2. 编码结构: @babel%2fcore
    */
   private getPackagePath(packageName: string): string {
-    // 处理 scoped 包名中的 /
-    const safeName = packageName.replace('/', '%2f');
-    return path.join(this.storagePath, safeName);
+    // 对于 scoped 包，优先使用嵌套结构
+    if (packageName.includes('/')) {
+      // 嵌套结构: @babel/core -> @babel/core
+      const nestedPath = path.join(this.storagePath, packageName);
+      return nestedPath;
+    }
+    // 非 scoped 包直接返回
+    return path.join(this.storagePath, packageName);
   }
 
   /**

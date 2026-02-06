@@ -88,9 +88,7 @@ export class StorageScanner {
    * 获取包的存储目录
    */
   private getPackageDir(packageName: string): string {
-    // 处理 scoped 包名
-    const safeName = packageName.replace('/', '%2f');
-    return path.join(this.storagePath, safeName);
+    return path.join(this.storagePath, packageName);
   }
 
   /**

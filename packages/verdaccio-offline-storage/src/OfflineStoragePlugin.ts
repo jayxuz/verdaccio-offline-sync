@@ -111,6 +111,12 @@ export default class OfflineStoragePlugin extends LocalDatabase {
    */
   getPackageStorage(packageName: string): pluginUtils.StorageHandler {
     const storagePath = join(this.config.storage as string, packageName);
+
+    this.logger.warn(
+      { packageName, storagePath },
+      '[verdaccio-offline-storage/getPackageStorage] Creating storage for package @{packageName} at @{storagePath}'
+    );
+
     return new OfflinePackageStorage(storagePath, this.logger, this.config) as unknown as pluginUtils.StorageHandler;
   }
 }
