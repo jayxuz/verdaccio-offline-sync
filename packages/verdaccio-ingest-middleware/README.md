@@ -10,6 +10,10 @@ A Verdaccio middleware plugin for recursive package ingestion with multi-platfor
 - **Multi-Platform Binary Support**: Downloads platform-specific binaries (linux-x64, win32-x64, darwin-arm64, etc.)
 - **Differential Export**: Export only new/modified packages since last export for efficient offline sync
 - **Web UI**: Built-in management interface for easy operation
+- **Metadata Sync UI** (New): Integrated metadata sync card in Web UI, supports syncing all packages metadata from upstream
+- **Single Package Sync** (New): Sync metadata for individual packages, supports scoped packages like `@types/node`
+- **Package List Browsing** (New): View all local packages and sync from the list with one click
+- **Sync Progress Display** (New): Real-time sync progress with processed count, total, and failure statistics
 - **Async Task Management**: Long-running operations run in background with progress tracking
 - **Analysis-Confirm-Download Workflow**: Preview what will be downloaded before actually downloading
 
@@ -143,6 +147,10 @@ Access the management interface at `http://localhost:4873/_/ingest/ui` for a vis
 - Download missing packages
 - Create differential exports
 - Monitor task progress
+- Sync all packages metadata (calls `verdaccio-metadata-healer` sync API)
+- Sync single package metadata with scoped package support
+- Browse local package list and sync from list
+- View sync progress and results
 
 ## Requirements
 

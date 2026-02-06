@@ -1,6 +1,6 @@
 {
   "name": "@jayxuz/verdaccio-offline-storage",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "description": "Verdaccio storage plugin that treats local package cache as first class citizen for offline environments",
   "main": "build/index.js",
   "types": "build/index.d.ts",

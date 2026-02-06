@@ -25,6 +25,12 @@ This is an improved fork of the original `verdaccio-offline-storage` plugin. Key
 - **Graceful Degradation**: Better error handling that doesn't break the entire request on partial failures
 - **Detailed Logging**: More informative debug and trace logs for troubleshooting
 
+### Metadata Operation Tracking (New in v3.1.0)
+- **savePackage Override**: Tracks metadata save operations with detailed logging (version count, dist-tags, latest version)
+- **updatePackage Override**: Monitors metadata update flow with before/after version tracking
+- **Improved Offline Detection**: Enhanced `readPackage` logic with better null safety for `getMatchedPackagesSpec`
+- **Storage Path Logging**: `getPackageStorage` now logs package storage path creation for debugging
+
 ### Code Quality
 - **Modern JavaScript**: ES2020+ features, async/await, optional chaining
 - **Type Definitions**: Full TypeScript type definitions included

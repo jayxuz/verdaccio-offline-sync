@@ -25,6 +25,12 @@
 - **优雅降级**：更好的错误处理，部分失败不会导致整个请求失败
 - **详细日志**：更丰富的 debug 和 trace 日志，便于故障排查
 
+### 元数据操作追踪（v3.1.0 新增）
+- **savePackage 重写**：追踪元数据保存操作，记录详细日志（版本数量、dist-tags、最新版本）
+- **updatePackage 重写**：监控元数据更新流程，记录更新前后的版本变化
+- **改进的离线检测**：增强 `readPackage` 逻辑，改进 `getMatchedPackagesSpec` 的空值安全处理
+- **存储路径日志**：`getPackageStorage` 现在记录包存储路径创建信息，便于调试
+
 ### 代码质量
 - **现代 JavaScript**：ES2020+ 特性、async/await、可选链
 - **类型定义**：包含完整的 TypeScript 类型定义

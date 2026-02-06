@@ -2,10 +2,10 @@
 
 English | [中文](./README.zh-CN.md)
 
-A Verdaccio plugin suite for automatic metadata healing and differential package import in offline environments. This package provides two plugins:
+A Verdaccio plugin suite for automatic metadata healing, metadata sync, and differential package import in offline environments. This package provides two plugins:
 
-1. **MetadataHealerFilter** - A filter plugin that automatically repairs missing package metadata
-2. **ImportMiddleware** - A middleware plugin for importing differential export packages
+1. **MetadataHealerFilter** - A filter plugin that automatically repairs missing package metadata and syncs metadata from upstream
+2. **ImportMiddleware** - A middleware plugin for importing differential export packages (supports upload and local path import)
 
 ## Features
 
@@ -15,13 +15,17 @@ A Verdaccio plugin suite for automatic metadata healing and differential package
 - **SHA Sum Caching**: Caches computed checksums for performance
 - **Auto-Update Latest Tag**: Automatically updates `dist-tags.latest` to the highest available version
 - **Non-Destructive**: Repairs metadata on-the-fly without modifying original files
+- **Metadata Sync** (New): Sync package metadata from upstream registry to local storage, supports single package and batch sync
+- **Scoped Package Support** (New): Optimized package name extraction logic, supports `@scope/package` nested directory structure
 
 ### Import Middleware
 - **Differential Import**: Import packages from export archives created by `verdaccio-ingest-middleware`
+- **Local Path Import** (New): Import `.tar.gz` packages directly from server local paths via `/local` endpoint
 - **Web UI**: Built-in interface for uploading and managing imports
 - **Progress Tracking**: Real-time progress updates during import
 - **Checksum Validation**: Validates file integrity during import
 - **Import History**: Tracks all import operations
+- **10GB Upload Limit** (New): File upload size limit increased from 2GB to 10GB
 
 ## Installation
 
@@ -97,11 +101,29 @@ The import middleware allows you to:
 
 All endpoints are prefixed with `/_/healer/`.
 
+### Import Endpoints
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/import/upload` | Upload and import a differential package |
+| POST | `/import/local` | Import `.tar.gz` packages from server local path |
 | GET | `/import/status/:taskId` | Query import task status |
 | GET | `/import/history` | Get import history |
+
+### Metadata Sync Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/sync/:name` | Sync metadata for a single package |
+| POST | `/sync/:scope/:name` | Sync metadata for a scoped package (e.g. `@types/node`) |
+| POST | `/sync-all` | Sync metadata for all local packages (async task) |
+| GET | `/sync/status/:taskId` | Query sync task status |
+| GET | `/packages` | List all local packages |
+
+### Other Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/ui` | Web management interface |
 
 ## Usage Examples
@@ -133,14 +155,46 @@ curl http://localhost:4873/_/healer/import/history
 | `rebuildMetadata` | boolean | true | Rebuild package metadata after import |
 | `validateChecksum` | boolean | true | Validate file checksums |
 
+### Import from Local Path
+
+```bash
+# Import packages from a local directory on the server
+curl -X POST http://localhost:4873/_/healer/import/local \
+  -H "Content-Type: application/json" \
+  -d '{"localPath": "/data/packages/verdaccio-export.tar.gz", "overwrite": false, "rebuildMetadata": true, "validateChecksum": true}'
+```
+
+### Metadata Sync via API
+
+```bash
+# Sync metadata for a single package
+curl -X POST http://localhost:4873/_/healer/sync/lodash
+
+# Sync metadata for a scoped package
+curl -X POST http://localhost:4873/_/healer/sync/@types/node
+
+# Sync all packages metadata (async task)
+curl -X POST http://localhost:4873/_/healer/sync-all
+# Response: {"success": true, "taskId": "task-xxx", "totalPackages": 100}
+
+# Check sync task status
+curl http://localhost:4873/_/healer/sync/status/task-xxx
+
+# List all local packages
+curl http://localhost:4873/_/healer/packages
+```
+
 ## Web UI
 
-Access the import interface at `http://localhost:4873/_/healer/ui` for:
+Access the management interface at `http://localhost:4873/_/healer/ui` for:
 
 - Drag-and-drop file upload
+- Import from server local path
 - Real-time import progress
 - Import history viewing
 - Task status monitoring
+- Metadata sync operations (single package / batch sync)
+- Package list browsing with one-click sync
 
 ## Workflow: Online to Offline Sync
 

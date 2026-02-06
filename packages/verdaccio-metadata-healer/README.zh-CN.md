@@ -2,10 +2,10 @@
 
 [English](./README.md) | 中文
 
-一个用于离线环境中自动元数据修复和差分包导入的 Verdaccio 插件套件。本包提供两个插件：
+一个用于离线环境中自动元数据修复、元数据同步和差分包导入的 Verdaccio 插件套件。本包提供两个插件：
 
-1. **MetadataHealerFilter** - 自动修复缺失包元数据的过滤器插件
-2. **ImportMiddleware** - 用于导入差分导出包的中间件插件
+1. **MetadataHealerFilter** - 自动修复缺失包元数据并支持从上游同步元数据的过滤器插件
+2. **ImportMiddleware** - 用于导入差分导出包的中间件插件（支持上传和本地路径导入）
 
 ## 功能特性
 
@@ -15,13 +15,17 @@
 - **SHA 校验和缓存**：缓存计算的校验和以提高性能
 - **自动更新 Latest 标签**：自动将 `dist-tags.latest` 更新为最高可用版本
 - **非破坏性**：即时修复元数据，不修改原始文件
+- **元数据同步**（新增）：从上游仓库同步包元数据到本地存储，支持单包和批量同步
+- **Scoped 包支持**（新增）：优化包名提取逻辑，支持 `@scope/package` 嵌套目录结构
 
 ### 导入中间件
 - **差分导入**：导入由 `verdaccio-ingest-middleware` 创建的导出包
+- **本地路径导入**（新增）：通过 `/local` 接口直接从服务器本地路径导入 `.tar.gz` 包
 - **Web 界面**：内置上传和管理导入的界面
 - **进度跟踪**：导入过程中实时更新进度
 - **校验和验证**：导入时验证文件完整性
 - **导入历史**：跟踪所有导入操作
+- **10GB 上传限制**（新增）：文件上传大小限制从 2GB 提升至 10GB
 
 ## 安装
 
@@ -97,11 +101,29 @@ middlewares:
 
 所有端点以 `/_/healer/` 为前缀。
 
+### 导入端点
+
 | 方法 | 端点 | 描述 |
 |------|------|------|
 | POST | `/import/upload` | 上传并导入差分包 |
+| POST | `/import/local` | 从服务器本地路径导入 `.tar.gz` 包 |
 | GET | `/import/status/:taskId` | 查询导入任务状态 |
 | GET | `/import/history` | 获取导入历史 |
+
+### 元数据同步端点
+
+| 方法 | 端点 | 描述 |
+|------|------|------|
+| POST | `/sync/:name` | 同步单个包的元数据 |
+| POST | `/sync/:scope/:name` | 同步 scoped 包的元数据（如 `@types/node`） |
+| POST | `/sync-all` | 同步所有本地包的元数据（异步任务） |
+| GET | `/sync/status/:taskId` | 查询同步任务状态 |
+| GET | `/packages` | 列出所有本地包 |
+
+### 其他端点
+
+| 方法 | 端点 | 描述 |
+|------|------|------|
 | GET | `/ui` | Web 管理界面 |
 
 ## 使用示例
@@ -133,14 +155,46 @@ curl http://localhost:4873/_/healer/import/history
 | `rebuildMetadata` | boolean | true | 导入后重建包元数据 |
 | `validateChecksum` | boolean | true | 验证文件校验和 |
 
+### 从本地路径导入
+
+```bash
+# 从服务器本地目录导入包
+curl -X POST http://localhost:4873/_/healer/import/local \
+  -H "Content-Type: application/json" \
+  -d '{"localPath": "/data/packages/verdaccio-export.tar.gz", "overwrite": false, "rebuildMetadata": true, "validateChecksum": true}'
+```
+
+### 通过 API 同步元数据
+
+```bash
+# 同步单个包的元数据
+curl -X POST http://localhost:4873/_/healer/sync/lodash
+
+# 同步 scoped 包的元数据
+curl -X POST http://localhost:4873/_/healer/sync/@types/node
+
+# 同步所有包的元数据（异步任务）
+curl -X POST http://localhost:4873/_/healer/sync-all
+# 响应: {"success": true, "taskId": "task-xxx", "totalPackages": 100}
+
+# 检查同步任务状态
+curl http://localhost:4873/_/healer/sync/status/task-xxx
+
+# 列出所有本地包
+curl http://localhost:4873/_/healer/packages
+```
+
 ## Web 管理界面
 
 访问 `http://localhost:4873/_/healer/ui` 可以：
 
 - 拖放文件上传
+- 从服务器本地路径导入
 - 实时查看导入进度
 - 查看导入历史
 - 监控任务状态
+- 元数据同步操作（单包 / 批量同步）
+- 浏览包列表并一键同步
 
 ## 工作流：在线到离线同步
 
