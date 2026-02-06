@@ -14,6 +14,7 @@
 - **单包同步**（新增）：支持同步单个包的元数据，支持 scoped 包如 `@types/node`
 - **包列表浏览**（新增）：查看所有本地包并支持一键从列表同步
 - **同步进度展示**（新增）：实时显示同步进度，包括已处理数量、总数量、失败数量等统计
+- **同级版本补全**（新增）：对每个已缓存的版本，自动下载同 minor 系列的最新 patch 版本和同 major 系列的最新 minor 版本
 - **异步任务管理**：长时间运行的操作在后台执行，支持进度跟踪
 - **分析-确认-下载工作流**：在实际下载前预览将要下载的内容
 
@@ -47,6 +48,7 @@ middlewares:
     # 同步选项
     sync:
       updateToLatest: true
+      completeSiblingVersions: false
       includeDev: false
       includePeer: true
       includeOptional: true

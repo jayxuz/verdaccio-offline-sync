@@ -33,14 +33,17 @@
 - **可视化管理界面** - 内置 Web UI，支持分析-确认-下载工作流
 - **实时进度追踪** - 显示详细进度、预估剩余时间
 - **元数据自愈** - 内网自动修复缺失的包元数据
+- **元数据同步** - 支持从上游仓库同步包元数据到本地，支持单包和批量同步
+- **同级版本补全** - 自动下载同 minor 最新 patch 和同 major 最新 minor 版本
+- **本地路径导入** - 支持从服务器本地路径直接导入差分包
 
 ## 插件组成
 
 | 插件 | 部署位置 | 功能 |
 |------|----------|------|
 | `@jayxuz/verdaccio-offline-storage` | 外网/内网 | 基础存储层，支持离线版本解析 |
-| `verdaccio-ingest-middleware` | 外网 | 递归摄取中间件，提供 Web UI，支持差分导出 |
-| `verdaccio-metadata-healer` | 内网 | 元数据自愈过滤器，支持差分导入 |
+| `verdaccio-ingest-middleware` | 外网 | 递归摄取中间件，提供 Web UI，支持差分导出和同级版本补全 |
+| `verdaccio-metadata-healer` | 内网 | 元数据自愈过滤器，支持差分导入、本地路径导入和元数据同步 |
 
 
 ### Web UI 管理界面
@@ -156,6 +159,7 @@ middlewares:
         arch: arm64
     sync:
       updateToLatest: true
+      completeSiblingVersions: false
       includeDev: false
       includePeer: true
       includeOptional: true
@@ -226,6 +230,7 @@ middlewares:
 | 选项 | 说明 |
 |------|------|
 | 更新到最新版本 | 检查已缓存包是否有更新版本 |
+| 补全同级版本 | 对每个已缓存版本，下载同 minor 最新 patch 和同 major 最新 minor |
 | 包含可选依赖 | 下载 optionalDependencies（平台二进制包） |
 | 包含对等依赖 | 下载 peerDependencies |
 
@@ -360,7 +365,9 @@ diff-export-2024-01-15T10-30-00.tar.gz
 │  │                                                             │   │
 │  │  导入 UI: http://internal:4873/_/healer/ui                  │   │
 │  │  ├── 📥 上传差分包                                          │   │
+│  │  ├── 📂 从本地路径导入差分包                                 │   │
 │  │  ├── 导入选项（覆盖/校验/重建元数据）                         │   │
+│  │  ├── 🔄 元数据同步（单包/批量同步）                          │   │
 │  │  └── 导入历史记录                                            │   │
 │  │                                                             │   │
 │  │  npm install react --registry http://internal:4873          │   │
@@ -393,14 +400,20 @@ diff-export-2024-01-15T10-30-00.tar.gz
 | `/_/ingest/export/create` | POST | 创建差分导出包 |
 | `/_/ingest/export/download/:exportId` | GET | 下载导出包 |
 
-### 内网插件 (import-middleware)
+### 内网插件 (metadata-healer)
 
 | 端点 | 方法 | 描述 |
 |------|------|------|
 | `/_/healer/ui` | GET | 导入管理界面 |
 | `/_/healer/import/upload` | POST | 上传并导入差分包 |
+| `/_/healer/import/local` | POST | 从服务器本地路径导入差分包 |
 | `/_/healer/import/status/:taskId` | GET | 查询导入任务状态 |
 | `/_/healer/import/history` | GET | 获取导入历史 |
+| `/_/healer/sync/:name` | POST | 同步单个包的元数据 |
+| `/_/healer/sync/:scope/:name` | POST | 同步 scoped 包的元数据 |
+| `/_/healer/sync-all` | POST | 同步所有本地包的元数据 |
+| `/_/healer/sync/status/:taskId` | GET | 查询同步任务状态 |
+| `/_/healer/packages` | GET | 列出所有本地包 |
 
 ### API 示例
 
@@ -565,6 +578,7 @@ curl -X POST http://external:4873/_/ingest/sync \
 | `timeout` | number | 60000 | 请求超时（毫秒） |
 | `platforms` | array | - | 目标平台列表 |
 | `sync.updateToLatest` | boolean | true | 是否更新到最新版本 |
+| `sync.completeSiblingVersions` | boolean | false | 是否补全同级版本（同 minor 最新 patch + 同 major 最新 minor） |
 | `sync.includeDev` | boolean | false | 是否包含 devDependencies |
 | `sync.includePeer` | boolean | true | 是否包含 peerDependencies |
 | `sync.includeOptional` | boolean | true | 是否包含 optionalDependencies |
@@ -606,6 +620,7 @@ verdaccio-offline-sync/
 │       │   ├── import-ui.ts             # 导入 Web UI
 │       │   ├── storage-scanner.ts       # 存储扫描器
 │       │   ├── metadata-patcher.ts      # 元数据修补器
+│       │   ├── metadata-syncer.ts      # 元数据同步器
 │       │   ├── shasum-cache.ts          # shasum 缓存
 │       │   └── types.ts                 # 类型定义
 │       └── package.json

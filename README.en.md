@@ -33,14 +33,17 @@ English | [中文](./README.md)
 - **Visual Management Interface** - Built-in Web UI with analyze-confirm-download workflow
 - **Real-time Progress Tracking** - Displays detailed progress and estimated remaining time
 - **Metadata Self-Healing** - Automatically repairs missing package metadata in offline environments
+- **Metadata Sync** - Sync package metadata from upstream registry to local storage, supports single package and batch sync
+- **Sibling Version Completion** - Automatically downloads the latest patch within the same minor and the latest minor within the same major
+- **Local Path Import** - Import differential packages directly from server local paths
 
 ## Plugin Components
 
 | Plugin | Deployment | Function |
 |--------|------------|----------|
 | `@jayxuz/verdaccio-offline-storage` | Online/Offline | Base storage layer with offline version resolution |
-| `verdaccio-ingest-middleware` | Online | Recursive ingestion middleware with Web UI and differential export |
-| `verdaccio-metadata-healer` | Offline | Metadata self-healing filter with differential import |
+| `verdaccio-ingest-middleware` | Online | Recursive ingestion middleware with Web UI, differential export, and sibling version completion |
+| `verdaccio-metadata-healer` | Offline | Metadata self-healing filter with differential import, local path import, and metadata sync |
 
 ### Web UI Management Interface
 
@@ -155,6 +158,7 @@ middlewares:
         arch: arm64
     sync:
       updateToLatest: true
+      completeSiblingVersions: false
       includeDev: false
       includePeer: true
       includeOptional: true
@@ -225,6 +229,7 @@ Displays current local cache statistics:
 | Option | Description |
 |--------|-------------|
 | Update to Latest | Check for newer versions of cached packages |
+| Complete Sibling Versions | For each cached version, download the latest patch in the same minor and the latest minor in the same major |
 | Include Optional Dependencies | Download optionalDependencies (platform binaries) |
 | Include Peer Dependencies | Download peerDependencies |
 
@@ -359,7 +364,9 @@ Access `http://internal:4873/_/healer/ui` to open the import management interfac
 │  │                                                             │   │
 │  │  Import UI: http://internal:4873/_/healer/ui                │   │
 │  │  ├── 📥 Upload differential package                         │   │
+│  │  ├── 📂 Import from server local path                       │   │
 │  │  ├── Import options (overwrite/validate/rebuild metadata)   │   │
+│  │  ├── 🔄 Metadata sync (single package / batch sync)        │   │
 │  │  └── Import history                                         │   │
 │  │                                                             │   │
 │  │  npm install react --registry http://internal:4873          │   │
@@ -392,14 +399,20 @@ Access `http://internal:4873/_/healer/ui` to open the import management interfac
 | `/_/ingest/export/create` | POST | Create differential export package |
 | `/_/ingest/export/download/:exportId` | GET | Download export package |
 
-### Offline Plugin (import-middleware)
+### Offline Plugin (metadata-healer)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/_/healer/ui` | GET | Import management interface |
 | `/_/healer/import/upload` | POST | Upload and import differential package |
+| `/_/healer/import/local` | POST | Import differential package from server local path |
 | `/_/healer/import/status/:taskId` | GET | Query import task status |
 | `/_/healer/import/history` | GET | Get import history |
+| `/_/healer/sync/:name` | POST | Sync metadata for a single package |
+| `/_/healer/sync/:scope/:name` | POST | Sync metadata for a scoped package |
+| `/_/healer/sync-all` | POST | Sync metadata for all local packages |
+| `/_/healer/sync/status/:taskId` | GET | Query sync task status |
+| `/_/healer/packages` | GET | List all local packages |
 
 ### API Examples
 
@@ -564,6 +577,7 @@ Automatically detects and downloads platform-specific packages:
 | `timeout` | number | 60000 | Request timeout (ms) |
 | `platforms` | array | - | Target platform list |
 | `sync.updateToLatest` | boolean | true | Update to latest versions |
+| `sync.completeSiblingVersions` | boolean | false | Complete sibling versions (latest patch in same minor + latest minor in same major) |
 | `sync.includeDev` | boolean | false | Include devDependencies |
 | `sync.includePeer` | boolean | true | Include peerDependencies |
 | `sync.includeOptional` | boolean | true | Include optionalDependencies |
@@ -605,6 +619,7 @@ verdaccio-offline-sync/
 │       │   ├── import-ui.ts             # Import Web UI
 │       │   ├── storage-scanner.ts       # Storage scanner
 │       │   ├── metadata-patcher.ts      # Metadata patcher
+│       │   ├── metadata-syncer.ts      # Metadata syncer
 │       │   ├── shasum-cache.ts          # Shasum cache
 │       │   └── types.ts                 # Type definitions
 │       └── package.json

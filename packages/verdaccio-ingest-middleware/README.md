@@ -14,6 +14,7 @@ A Verdaccio middleware plugin for recursive package ingestion with multi-platfor
 - **Single Package Sync** (New): Sync metadata for individual packages, supports scoped packages like `@types/node`
 - **Package List Browsing** (New): View all local packages and sync from the list with one click
 - **Sync Progress Display** (New): Real-time sync progress with processed count, total, and failure statistics
+- **Sibling Version Completion** (New): Automatically downloads the latest patch version within the same minor series and the latest minor version within the same major series for each cached version
 - **Async Task Management**: Long-running operations run in background with progress tracking
 - **Analysis-Confirm-Download Workflow**: Preview what will be downloaded before actually downloading
 
@@ -47,6 +48,7 @@ middlewares:
     # Sync options
     sync:
       updateToLatest: true
+      completeSiblingVersions: false
       includeDev: false
       includePeer: true
       includeOptional: true

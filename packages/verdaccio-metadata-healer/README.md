@@ -17,6 +17,7 @@ A Verdaccio plugin suite for automatic metadata healing, metadata sync, and diff
 - **Non-Destructive**: Repairs metadata on-the-fly without modifying original files
 - **Metadata Sync** (New): Sync package metadata from upstream registry to local storage, supports single package and batch sync
 - **Scoped Package Support** (New): Optimized package name extraction logic, supports `@scope/package` nested directory structure
+- **Storage Access Fix**: Fixed package storage retrieval method, using `_getLocalStorage` instead of `getPackageStorage` for correct storage instance access
 
 ### Import Middleware
 - **Differential Import**: Import packages from export archives created by `verdaccio-ingest-middleware`
