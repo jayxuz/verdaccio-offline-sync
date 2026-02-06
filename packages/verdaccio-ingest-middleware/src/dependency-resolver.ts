@@ -88,18 +88,11 @@ export class DependencyResolver {
 
           if (!packument) return null;
 
-          const latestVersion = packument['dist-tags']?.latest;
-          let latestManifest = null;
-
-          if (latestVersion && packument.versions?.[latestVersion]) {
-            latestManifest = packument.versions[latestVersion];
-          }
-
           return {
             name: pkg.name,
             distTags: packument['dist-tags'] || {},
             versions: Object.keys(packument.versions || {}),
-            latestManifest
+            latestManifest: null
           } as RefreshedMetadata;
         } catch (error: any) {
           completed++;
@@ -402,7 +395,40 @@ export class DependencyResolver {
   }
 
   /**
-   * 获取 packument（带缓存）
+   * 精简 packument 数据，只保留分析所需的字段
+   * 完整 packument 可能包含 readme、scripts 等大量无用数据，
+   * 对于 7000+ 包的场景会导致内存溢出
+   */
+  private trimPackument(packument: any): any {
+    const trimmed: any = {
+      name: packument.name,
+      'dist-tags': packument['dist-tags'] || {}
+    };
+
+    // 只保留每个版本的依赖相关字段和 dist 信息
+    if (packument.versions) {
+      trimmed.versions = {};
+      for (const [ver, manifest] of Object.entries<any>(packument.versions)) {
+        trimmed.versions[ver] = {
+          name: manifest.name,
+          version: manifest.version,
+          dependencies: manifest.dependencies,
+          devDependencies: manifest.devDependencies,
+          peerDependencies: manifest.peerDependencies,
+          optionalDependencies: manifest.optionalDependencies,
+          dist: manifest.dist,
+          os: manifest.os,
+          cpu: manifest.cpu,
+          libc: manifest.libc
+        };
+      }
+    }
+
+    return trimmed;
+  }
+
+  /**
+   * 获取 packument（带缓存，精简存储）
    */
   private async getPackument(name: string): Promise<any | null> {
     if (this.packumentCache.has(name)) {
@@ -414,8 +440,10 @@ export class DependencyResolver {
         registry: this.registry,
         fullMetadata: true
       });
-      this.packumentCache.set(name, packument);
-      return packument;
+      // 精简后再缓存，大幅减少内存占用
+      const trimmed = this.trimPackument(packument);
+      this.packumentCache.set(name, trimmed);
+      return trimmed;
     } catch (error: any) {
       this.logger.warn(
         { name, error: error.message },

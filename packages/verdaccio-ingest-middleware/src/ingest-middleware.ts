@@ -262,6 +262,9 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       );
       this.updateTask(taskId, { progress: 50 });
 
+      // 依赖分析完成后立即释放 packument 缓存，回收大量内存
+      this.resolver.clearCache();
+
       // 4. 下载缺失的包
       this.updateTask(taskId, { message: 'Downloading missing packages...' });
       const packagesToDownload: ResolvedPackage[] = missingPackages.map((p) => ({
@@ -322,6 +325,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
       return result;
     } catch (error: any) {
+      this.resolver.clearCache();
       this.updateTask(taskId, {
         status: 'failed',
         error: error.message
@@ -485,6 +489,9 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         startTime
       );
 
+      // 依赖分析完成后立即释放 packument 缓存，回收大量内存
+      this.resolver.clearCache();
+
       // 4. 分析平台二进制包
       this.updateTask(taskId, {
         message: '检测平台二进制包...',
@@ -586,6 +593,8 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
       return analysisResult;
     } catch (error: any) {
+      // 出错时也要释放缓存，防止内存泄漏
+      this.resolver.clearCache();
       this.updateTask(taskId, {
         status: 'failed',
         error: error.message
