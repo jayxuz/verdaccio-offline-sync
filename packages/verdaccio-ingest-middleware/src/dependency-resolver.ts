@@ -155,6 +155,7 @@ export class DependencyResolver {
       name: string;
       versionRange: string;
       requiredBy?: string;
+      reason?: PackageToDownload['reason'];
     }> = [];
 
     // 第一步：收集需要更新的包作为第一层
@@ -168,7 +169,21 @@ export class DependencyResolver {
           currentLayer.push({
             name: pkg.name,
             versionRange: latestVersion,
-            requiredBy: 'update-to-latest'
+            requiredBy: 'update-to-latest',
+            reason: 'newer-version'
+          });
+        }
+      }
+
+      // 补全同级版本：对每个已缓存版本，查找同 minor 最新 patch 和同 major 最新 minor
+      if (options.completeSiblingVersions) {
+        const siblingVersions = this.findSiblingVersions(pkg.versions, meta.versions);
+        for (const sibVer of siblingVersions) {
+          currentLayer.push({
+            name: pkg.name,
+            versionRange: sibVer,
+            requiredBy: 'complete-sibling-versions',
+            reason: 'sibling-version'
           });
         }
       }
@@ -198,10 +213,11 @@ export class DependencyResolver {
         name: string;
         versionRange: string;
         requiredBy?: string;
+        reason?: PackageToDownload['reason'];
       }> = [];
 
       // 处理当前层的每个包
-      for (const { name, versionRange, requiredBy } of currentLayer) {
+      for (const { name, versionRange, requiredBy, reason } of currentLayer) {
         totalProcessed++;
 
         // 更新进度
@@ -251,7 +267,7 @@ export class DependencyResolver {
             missing.push({
               name,
               version: resolvedVersion,
-              reason: depth === 0 ? 'newer-version' : 'missing-dependency',
+              reason: reason || (depth === 0 ? 'newer-version' : 'missing-dependency'),
               requiredBy
             });
           }
@@ -514,6 +530,54 @@ export class DependencyResolver {
         return v === range;
       }
     });
+  }
+
+  /**
+   * 为已缓存的版本查找同级版本（同 minor 最新 patch + 同 major 最新 minor）
+   *
+   * 对于每个已缓存的版本 X.Y.Z，从上游可用版本中找出：
+   * 1. X.Y.* 系列中的最新稳定版本（最新 patch）
+   * 2. X.*.* 系列中的最新稳定版本（最新 minor）
+   *
+   * 排除预发布版本，避免引入不稳定版本。
+   */
+  private findSiblingVersions(
+    cachedVersions: string[],
+    availableVersions: string[]
+  ): string[] {
+    const result = new Set<string>();
+
+    // 仅考虑稳定版本（排除预发布版本）
+    const stableAvailable = availableVersions.filter((v) => {
+      const parsed = semver.parse(v);
+      return parsed && !parsed.prerelease.length;
+    });
+
+    const cachedSet = new Set(cachedVersions);
+
+    for (const cachedVersion of cachedVersions) {
+      const parsed = semver.parse(cachedVersion);
+      if (!parsed) continue;
+
+      const major = parsed.major;
+      const minor = parsed.minor;
+
+      // 1. 查找同 minor 系列的最新 patch: X.Y.*
+      const patchRange = `>=${major}.${minor}.0 <${major}.${minor + 1}.0`;
+      const latestPatch = semver.maxSatisfying(stableAvailable, patchRange);
+      if (latestPatch && !cachedSet.has(latestPatch)) {
+        result.add(latestPatch);
+      }
+
+      // 2. 查找同 major 系列的最新 minor: X.*.*
+      const minorRange = `>=${major}.0.0 <${major + 1}.0.0`;
+      const latestMinor = semver.maxSatisfying(stableAvailable, minorRange);
+      if (latestMinor && !cachedSet.has(latestMinor)) {
+        result.add(latestMinor);
+      }
+    }
+
+    return Array.from(result);
   }
 
   /**

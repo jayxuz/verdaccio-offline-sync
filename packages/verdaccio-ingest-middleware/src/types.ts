@@ -26,6 +26,7 @@ export interface IngestConfig {
  */
 export interface SyncOptions {
   updateToLatest?: boolean;
+  completeSiblingVersions?: boolean;
   includeDev?: boolean;
   includePeer?: boolean;
   includeOptional?: boolean;
@@ -108,7 +109,7 @@ export interface RefreshedMetadata {
 export interface PackageToDownload {
   name: string;
   version: string;
-  reason: 'newer-version' | 'missing-dependency' | 'platform-binary';
+  reason: 'newer-version' | 'missing-dependency' | 'platform-binary' | 'sibling-version';
   /** 被哪个包依赖（用于追踪依赖链） */
   requiredBy?: string;
 }

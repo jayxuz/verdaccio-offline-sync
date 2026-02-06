@@ -734,6 +734,10 @@ export function getWebUIHTML(config: any): string {
             <label><input type="checkbox" id="includePeer" checked><span>包含对等依赖</span></label>
             <button class="help-btn" type="button">?<span class="tooltip">下载 peerDependencies 中声明的包，这些是运行时需要的依赖</span></button>
           </div>
+          <div class="option-row">
+            <label><input type="checkbox" id="completeSiblingVersions"><span>补全同级版本</span></label>
+            <button class="help-btn" type="button">?<span class="tooltip">对每个已缓存的版本，自动下载同 minor 系列的最新 patch 版本和同 major 系列的最新 minor 版本。例如本地有 6.3.2，则补全 6.3.x 最新和 6.x.x 最新</span></button>
+          </div>
         </div>
         <button class="btn btn-primary" onclick="startAnalysis()" id="analyzeBtn">
           🔍 分析依赖
@@ -1333,7 +1337,8 @@ export function getWebUIHTML(config: any): string {
       const options = {
         updateToLatest: document.getElementById('updateToLatest').checked,
         includeOptional: document.getElementById('includeOptional').checked,
-        includePeer: document.getElementById('includePeer').checked
+        includePeer: document.getElementById('includePeer').checked,
+        completeSiblingVersions: document.getElementById('completeSiblingVersions').checked
       };
 
       try {
@@ -1411,7 +1416,8 @@ export function getWebUIHTML(config: any): string {
         const reasonLabels = {
           'newer-version': '新版本',
           'missing-dependency': '缺失依赖',
-          'platform-binary': '平台包'
+          'platform-binary': '平台包',
+          'sibling-version': '同级版本'
         };
 
         // 只显示前50个
@@ -1597,7 +1603,8 @@ export function getWebUIHTML(config: any): string {
       const options = {
         updateToLatest: document.getElementById('updateToLatest').checked,
         includeOptional: document.getElementById('includeOptional').checked,
-        includePeer: document.getElementById('includePeer').checked
+        includePeer: document.getElementById('includePeer').checked,
+        completeSiblingVersions: document.getElementById('completeSiblingVersions').checked
       };
 
       try {

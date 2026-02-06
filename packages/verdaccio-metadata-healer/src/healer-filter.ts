@@ -282,7 +282,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
 
     try {
       // 获取包的存储实例
-      const packageStorage = this.verdaccioStorage.getPackageStorage(packageName);
+      const packageStorage = this.verdaccioStorage.localStorage._getLocalStorage(packageName);
 
       if (!packageStorage) {
         this.logger.warn(
