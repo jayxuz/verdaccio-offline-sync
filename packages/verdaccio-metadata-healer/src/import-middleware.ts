@@ -42,7 +42,7 @@ export default class ImportMiddleware extends pluginUtils.Plugin<HealerConfig> {
     this.upload = multer({
       dest: uploadDir,
       limits: {
-        fileSize: 1024 * 1024 * 1024 * 2 // 2GB 限制
+        fileSize: 1024 * 1024 * 1024 * 10 // 10GB 限制
       },
       fileFilter: (req, file, cb) => {
         // 只接受 .tar.gz 或 .tgz 文件

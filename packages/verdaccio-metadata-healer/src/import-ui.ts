@@ -503,56 +503,56 @@ export function getImportUIHTML(config: any): string {
       </div>
     </div>
 
-    <!-- 元数据同步 -->
+    <!-- 本地路径导入 -->
     <div class="card">
-      <h2>📋 元数据同步</h2>
-      <p style="color: #666; margin-bottom: 15px;">从远端 registry 同步最新的包元数据到本地，更新 dist-tags（如 latest、next 等）</p>
+      <h2>📂 从服务器本地路径导入</h2>
+      <p style="color: #666; margin-bottom: 15px;">适用于通过 SSH/SCP 预先上传到服务器的差分包，无需通过浏览器上传</p>
 
-      <div class="sync-actions" style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px;">
-        <button class="btn btn-primary" id="syncAllBtn" onclick="startSyncAll()">
-          🔄 刷新所有元数据
-        </button>
-        <button class="btn" style="background: #6c757d; color: white;" onclick="loadPackageList()">
-          📦 查看本地包列表
-        </button>
-      </div>
-
-      <!-- 单包同步 -->
       <div class="form-group">
-        <label>同步单个包</label>
+        <label>文件路径</label>
         <div style="display: flex; gap: 10px;">
-          <input type="text" id="syncPackageName" placeholder="输入包名，如 @babel/core 或 lodash"
+          <input type="text" id="localPathInput" placeholder="输入服务器上的文件绝对路径，如 /tmp/export-2024.tar.gz"
             style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px;">
-          <button class="btn btn-primary" onclick="syncSinglePackage()">同步</button>
         </div>
       </div>
 
-      <!-- 同步进度 -->
-      <div class="sync-progress-container" id="syncProgressContainer" style="display: none; margin-top: 20px;">
+      <div class="form-group">
+        <label>导入选项</label>
+        <div class="option-row">
+          <label><input type="checkbox" id="localOverwrite"><span>覆盖已存在的文件</span></label>
+        </div>
+        <div class="option-row">
+          <label><input type="checkbox" id="localValidateChecksum" checked><span>验证文件校验和</span></label>
+        </div>
+        <div class="option-row">
+          <label><input type="checkbox" id="localRebuildMetadata" checked><span>自动重建元数据</span></label>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="localImportBtn" onclick="startLocalImport()">
+        🚀 从本地路径导入
+      </button>
+
+      <!-- 本地导入进度 -->
+      <div class="progress-container" id="localProgressContainer">
         <div class="progress-header">
-          <span class="progress-phase" id="syncProgressPhase">准备中...</span>
-          <span class="progress-percentage" id="syncProgressPercentage">0%</span>
+          <span class="progress-phase" id="localProgressPhase">准备中...</span>
+          <span class="progress-percentage" id="localProgressPercentage">0%</span>
         </div>
         <div class="progress-bar">
-          <div class="progress-bar-fill" id="syncProgressBar" style="width: 0%"></div>
+          <div class="progress-bar-fill" id="localProgressBar" style="width: 0%"></div>
         </div>
-        <div class="progress-message" id="syncProgressMessage">等待开始...</div>
+        <div class="progress-message" id="localProgressMessage">等待开始...</div>
       </div>
 
-      <!-- 同步结果 -->
-      <div class="sync-result-container" id="syncResultContainer" style="display: none; margin-top: 20px; padding: 15px; border-radius: 8px;">
-        <div class="result-icon" id="syncResultIcon" style="font-size: 36px; text-align: center;">✅</div>
-        <div class="result-title" id="syncResultTitle" style="text-align: center; font-size: 16px; font-weight: 600; margin: 10px 0;">同步完成</div>
-        <div class="sync-result-stats" id="syncResultStats" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;"></div>
-      </div>
-
-      <!-- 包列表 -->
-      <div class="package-list-container" id="packageListContainer" style="display: none; margin-top: 20px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-          <span style="font-weight: 600;">本地包列表 (<span id="packageCount">0</span> 个)</span>
-          <button class="btn" style="background: #6c757d; color: white; padding: 5px 10px;" onclick="hidePackageList()">关闭</button>
+      <!-- 本地导入结果 -->
+      <div class="result-container" id="localResultContainer">
+        <div class="result-icon" id="localResultIcon">✅</div>
+        <div class="result-title" id="localResultTitle">导入完成</div>
+        <div class="result-stats" id="localResultStats"></div>
+        <div style="text-align: center;">
+          <button class="btn btn-primary" onclick="resetLocalImport()">↩️ 继续导入</button>
         </div>
-        <div class="package-list" id="packageList" style="max-height: 300px; overflow-y: auto; border: 1px solid #eee; border-radius: 5px;"></div>
       </div>
     </div>
 
@@ -691,6 +691,131 @@ export function getImportUIHTML(config: any): string {
         addLog('上传失败: ' + error.message, 'error');
         document.getElementById('importBtn').disabled = false;
       }
+    }
+
+    // 本地路径导入
+    let localPollInterval = null;
+
+    async function startLocalImport() {
+      const localPath = document.getElementById('localPathInput').value.trim();
+      if (!localPath) {
+        addLog('请输入文件路径', 'warning');
+        return;
+      }
+
+      if (!localPath.endsWith('.tar.gz') && !localPath.endsWith('.tgz')) {
+        addLog('只支持 .tar.gz 或 .tgz 文件', 'warning');
+        return;
+      }
+
+      try {
+        document.getElementById('localImportBtn').disabled = true;
+        document.getElementById('localProgressContainer').classList.add('visible');
+        document.getElementById('localResultContainer').classList.remove('visible');
+        addLog('正在从本地路径导入: ' + localPath, 'info');
+
+        const response = await fetch(API_BASE + '/local', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            path: localPath,
+            overwrite: document.getElementById('localOverwrite').checked,
+            validateChecksum: document.getElementById('localValidateChecksum').checked,
+            rebuildMetadata: document.getElementById('localRebuildMetadata').checked
+          })
+        });
+        const data = await response.json();
+
+        if (data.success && data.taskId) {
+          addLog('导入任务已启动: ' + data.taskId, 'success');
+          startLocalPolling(data.taskId);
+        } else {
+          addLog('启动导入失败: ' + (data.error || '未知错误'), 'error');
+          document.getElementById('localImportBtn').disabled = false;
+        }
+      } catch (error) {
+        addLog('本地导入请求失败: ' + error.message, 'error');
+        document.getElementById('localImportBtn').disabled = false;
+      }
+    }
+
+    function startLocalPolling(taskId) {
+      if (localPollInterval) {
+        clearInterval(localPollInterval);
+      }
+
+      localPollInterval = setInterval(async () => {
+        try {
+          const response = await fetch(API_BASE + '/status/' + taskId);
+          const task = await response.json();
+
+          updateLocalProgress(task);
+
+          if (task.status === 'completed' || task.status === 'failed') {
+            clearInterval(localPollInterval);
+            localPollInterval = null;
+
+            if (task.status === 'completed' && task.result) {
+              addLog('本地导入完成: ' + task.result.imported + ' 个文件', 'success');
+              showLocalResult(task.result);
+              loadHistory();
+            } else {
+              addLog('本地导入失败: ' + (task.error || '未知错误'), 'error');
+              showLocalError(task.error || '未知错误');
+            }
+            document.getElementById('localImportBtn').disabled = false;
+          }
+        } catch (error) {
+          addLog('查询状态失败: ' + error.message, 'error');
+        }
+      }, 1000);
+    }
+
+    function updateLocalProgress(task) {
+      const phase = document.getElementById('localProgressPhase');
+      const percentage = document.getElementById('localProgressPercentage');
+      const bar = document.getElementById('localProgressBar');
+      const message = document.getElementById('localProgressMessage');
+
+      if (task.progress !== undefined) {
+        const pct = Math.round(task.progress);
+        percentage.textContent = pct + '%';
+        bar.style.width = pct + '%';
+      }
+      if (task.message) {
+        message.textContent = task.message;
+      }
+      if (task.detailedProgress) {
+        phase.textContent = task.detailedProgress.phaseDescription || task.detailedProgress.phase || '处理中...';
+      }
+    }
+
+    function showLocalResult(result) {
+      document.getElementById('localProgressContainer').classList.remove('visible');
+      document.getElementById('localResultContainer').classList.add('visible');
+      document.getElementById('localResultIcon').textContent = '✅';
+      document.getElementById('localResultTitle').textContent = '导入完成';
+      document.getElementById('localResultStats').innerHTML =
+        '<div style="text-align: center; color: #666;">' +
+        '导入 ' + result.imported + ' 个文件' +
+        (result.skipped ? '，跳过 ' + result.skipped + ' 个' : '') +
+        (result.failed ? '，失败 ' + result.failed + ' 个' : '') +
+        '</div>';
+    }
+
+    function showLocalError(error) {
+      document.getElementById('localProgressContainer').classList.remove('visible');
+      document.getElementById('localResultContainer').classList.add('visible');
+      document.getElementById('localResultIcon').textContent = '❌';
+      document.getElementById('localResultTitle').textContent = '导入失败';
+      document.getElementById('localResultStats').innerHTML =
+        '<div style="text-align: center; color: #e57373;">' + error + '</div>';
+    }
+
+    function resetLocalImport() {
+      document.getElementById('localProgressContainer').classList.remove('visible');
+      document.getElementById('localResultContainer').classList.remove('visible');
+      document.getElementById('localPathInput').value = '';
     }
 
     // 开始轮询状态
@@ -832,208 +957,8 @@ export function getImportUIHTML(config: any): string {
     document.addEventListener('DOMContentLoaded', function() {
       loadHistory();
     });
-
-    // ==================== 元数据同步功能 ====================
-    const SYNC_API_BASE = '/_/healer';
-    let currentSyncTaskId = null;
-    let syncPollInterval = null;
-
-    // 开始同步所有包
-    async function startSyncAll() {
-      try {
-        document.getElementById('syncAllBtn').disabled = true;
-        document.getElementById('syncProgressContainer').style.display = 'block';
-        document.getElementById('syncResultContainer').style.display = 'none';
-        document.getElementById('packageListContainer').style.display = 'none';
-
-        addLog('正在启动元数据同步任务...', 'info');
-
-        const response = await fetch(SYNC_API_BASE + '/sync-all', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({})
-        });
-        const data = await response.json();
-
-        if (data.success && data.taskId) {
-          currentSyncTaskId = data.taskId;
-          addLog('同步任务已启动: ' + data.taskId + ' (' + data.totalPackages + ' 个包)', 'success');
-          startSyncPolling(data.taskId);
-        } else {
-          addLog('启动同步失败: ' + (data.error || '未知错误'), 'error');
-          document.getElementById('syncAllBtn').disabled = false;
-        }
-      } catch (error) {
-        addLog('同步请求失败: ' + error.message, 'error');
-        document.getElementById('syncAllBtn').disabled = false;
-      }
-    }
-
-    // 同步单个包
-    async function syncSinglePackage() {
-      const packageName = document.getElementById('syncPackageName').value.trim();
-      if (!packageName) {
-        addLog('请输入包名', 'warning');
-        return;
-      }
-
-      try {
-        addLog('正在同步 ' + packageName + '...', 'info');
-
-        // 处理 scoped 包名
-        let url = SYNC_API_BASE + '/sync/';
-        if (packageName.startsWith('@')) {
-          const parts = packageName.substring(1).split('/');
-          url += parts[0] + '/' + parts[1];
-        } else {
-          url += packageName;
-        }
-
-        const response = await fetch(url, { method: 'POST' });
-        const data = await response.json();
-
-        if (data.success) {
-          addLog('同步成功: ' + packageName + ' (' + data.versionsCount + ' 个版本, latest: ' + (data.distTags?.latest || 'N/A') + ')', 'success');
-        } else {
-          addLog('同步失败: ' + packageName + ' - ' + (data.error || '未知错误'), 'error');
-        }
-      } catch (error) {
-        addLog('同步请求失败: ' + error.message, 'error');
-      }
-    }
-
-    // 开始轮询同步状态
-    function startSyncPolling(taskId) {
-      if (syncPollInterval) {
-        clearInterval(syncPollInterval);
-      }
-
-      syncPollInterval = setInterval(async () => {
-        try {
-          const response = await fetch(SYNC_API_BASE + '/sync/status/' + taskId);
-          const task = await response.json();
-
-          updateSyncProgress(task);
-
-          if (task.status === 'completed' || task.status === 'failed') {
-            clearInterval(syncPollInterval);
-            syncPollInterval = null;
-            document.getElementById('syncAllBtn').disabled = false;
-
-            if (task.status === 'completed') {
-              const results = task.results || [];
-              const successCount = results.filter(r => r.success).length;
-              const failedCount = results.filter(r => !r.success).length;
-              addLog('同步完成: ' + successCount + ' 成功, ' + failedCount + ' 失败', 'success');
-              showSyncResult(task);
-            } else {
-              addLog('同步失败: ' + (task.error || '未知错误'), 'error');
-              showSyncError(task.error || '未知错误');
-            }
-          }
-        } catch (error) {
-          addLog('获取同步状态失败: ' + error.message, 'error');
-        }
-      }, 1000);
-    }
-
-    // 更新同步进度
-    function updateSyncProgress(task) {
-      const progress = task.progress || 0;
-      const current = task.current || 0;
-      const total = task.total || 0;
-      const currentPackage = task.currentPackage || '';
-
-      document.getElementById('syncProgressPhase').textContent =
-        task.status === 'running' ? '同步中 (' + current + '/' + total + ')' : '准备中...';
-      document.getElementById('syncProgressPercentage').textContent = progress + '%';
-      document.getElementById('syncProgressBar').style.width = progress + '%';
-      document.getElementById('syncProgressMessage').textContent =
-        currentPackage ? '正在同步: ' + currentPackage : '处理中...';
-    }
-
-    // 显示同步结果
-    function showSyncResult(task) {
-      document.getElementById('syncProgressContainer').style.display = 'none';
-      document.getElementById('syncResultContainer').style.display = 'block';
-      document.getElementById('syncResultContainer').style.background = '#e8f5e9';
-      document.getElementById('syncResultContainer').style.border = '1px solid #c8e6c9';
-
-      const results = task.results || [];
-      const successCount = results.filter(r => r.success).length;
-      const failedCount = results.filter(r => !r.success).length;
-
-      document.getElementById('syncResultIcon').textContent = failedCount === 0 ? '✅' : '⚠️';
-      document.getElementById('syncResultTitle').textContent =
-        failedCount === 0 ? '同步完成' : '同步完成（部分失败）';
-
-      document.getElementById('syncResultStats').innerHTML =
-        '<div class=\"result-stat\" style=\"text-align: center; padding: 10px; background: white; border-radius: 6px;\">' +
-          '<div style=\"font-size: 24px; font-weight: bold; color: #28a745;\">' + successCount + '</div>' +
-          '<div style=\"font-size: 12px; color: #666;\">成功</div>' +
-        '</div>' +
-        '<div class=\"result-stat\" style=\"text-align: center; padding: 10px; background: white; border-radius: 6px;\">' +
-          '<div style=\"font-size: 24px; font-weight: bold; color: ' + (failedCount > 0 ? '#dc3545' : '#28a745') + ';\">' + failedCount + '</div>' +
-          '<div style=\"font-size: 12px; color: #666;\">失败</div>' +
-        '</div>';
-    }
-
-    // 显示同步错误
-    function showSyncError(error) {
-      document.getElementById('syncProgressContainer').style.display = 'none';
-      document.getElementById('syncResultContainer').style.display = 'block';
-      document.getElementById('syncResultContainer').style.background = '#ffebee';
-      document.getElementById('syncResultContainer').style.border = '1px solid #ffcdd2';
-
-      document.getElementById('syncResultIcon').textContent = '❌';
-      document.getElementById('syncResultTitle').textContent = '同步失败';
-      document.getElementById('syncResultStats').innerHTML =
-        '<p style=\"text-align: center; color: #d32f2f; grid-column: span 2;\">' + error + '</p>';
-    }
-
-    // 加载包列表
-    async function loadPackageList() {
-      try {
-        addLog('正在加载本地包列表...', 'info');
-        const response = await fetch(SYNC_API_BASE + '/packages');
-        const data = await response.json();
-
-        if (data.success) {
-          document.getElementById('packageCount').textContent = data.count;
-          document.getElementById('packageListContainer').style.display = 'block';
-
-          const packages = data.packages || [];
-          if (packages.length === 0) {
-            document.getElementById('packageList').innerHTML =
-              '<p style=\"color: #666; text-align: center; padding: 20px;\">暂无本地包</p>';
-          } else {
-            document.getElementById('packageList').innerHTML = packages.map(pkg =>
-              '<div style=\"display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #eee;\">' +
-                '<span>' + pkg + '</span>' +
-                '<button class=\"btn\" style=\"background: #28a745; color: white; padding: 3px 8px; font-size: 12px;\" onclick=\"syncPackageFromList(\\'' + pkg.replace(/'/g, \"\\\\'\") + '\\')\">同步</button>' +
-              '</div>'
-            ).join('');
-          }
-          addLog('已加载 ' + data.count + ' 个本地包', 'success');
-        } else {
-          addLog('加载包列表失败: ' + (data.error || '未知错误'), 'error');
-        }
-      } catch (error) {
-        addLog('加载包列表失败: ' + error.message, 'error');
-      }
-    }
-
-    // 隐藏包列表
-    function hidePackageList() {
-      document.getElementById('packageListContainer').style.display = 'none';
-    }
-
-    // 从列表同步单个包
-    async function syncPackageFromList(packageName) {
-      document.getElementById('syncPackageName').value = packageName;
-      await syncSinglePackage();
-    }
   </script>
 </body>
 </html>`;
 }
+

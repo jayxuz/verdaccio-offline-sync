@@ -1,8 +1,8 @@
-import { Router, Express, Request, Response } from 'express';
+import express, { Router, Express, Request, Response } from 'express';
 import { pluginUtils } from '@verdaccio/core';
 import { Config, Logger, Manifest } from '@verdaccio/types';
 import multer from 'multer';
-import { rm, readdir } from 'fs/promises';
+import { rm, readdir, stat, access } from 'fs/promises';
 import { join } from 'path';
 import { StorageScanner } from './storage-scanner';
 import { MetadataPatcher } from './metadata-patcher';
@@ -374,7 +374,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
     this.upload = multer({
       dest: uploadDir,
       limits: {
-        fileSize: 1024 * 1024 * 1024 * 2 // 2GB 限制
+        fileSize: 1024 * 1024 * 1024 * 10 // 10GB 限制
       },
       fileFilter: (req, file, cb) => {
         if (file.originalname.endsWith('.tar.gz') || file.originalname.endsWith('.tgz')) {
@@ -390,6 +390,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
     // 导入相关路由
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     router.post('/healer/import/upload', this.upload.single('file') as any, this.handleUpload.bind(this));
+    router.post('/healer/import/local', express.json(), this.handleLocalImport.bind(this));
     router.get('/healer/import/status/:taskId', this.handleStatus.bind(this));
     router.get('/healer/import/history', this.handleHistory.bind(this));
     router.get('/healer/ui', this.handleWebUI.bind(this));
@@ -486,6 +487,101 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
         // 忽略清理错误
       }
     }
+  }
+
+  private async handleLocalImport(req: Request, res: Response): Promise<void> {
+    const { path: filePath, overwrite, validateChecksum, rebuildMetadata } = req.body || {};
+
+    if (!filePath || typeof filePath !== 'string') {
+      res.status(400).json({ success: false, error: '请提供文件路径' });
+      return;
+    }
+
+    // 验证文件扩展名
+    if (!filePath.endsWith('.tar.gz') && !filePath.endsWith('.tgz')) {
+      res.status(400).json({ success: false, error: '只支持 .tar.gz 或 .tgz 文件' });
+      return;
+    }
+
+    // 验证文件存在
+    try {
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) {
+        res.status(400).json({ success: false, error: '指定路径不是文件' });
+        return;
+      }
+    } catch {
+      res.status(400).json({ success: false, error: '文件不存在或无法访问: ' + filePath });
+      return;
+    }
+
+    const options: ImportOptions = {
+      overwrite: overwrite === true,
+      rebuildMetadata: rebuildMetadata !== false,
+      validateChecksum: validateChecksum !== false
+    };
+
+    const taskId = this.createTask();
+    const filename = filePath.split('/').pop() || filePath;
+
+    // 本地路径导入不删除源文件
+    this.executeLocalImport(taskId, filePath, options).catch((error) => {
+      this.updateTask(taskId, {
+        status: 'failed',
+        error: error.message
+      });
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      filename,
+      message: 'Local import task started'
+    });
+  }
+
+  private async executeLocalImport(
+    taskId: string,
+    filePath: string,
+    options: ImportOptions
+  ): Promise<void> {
+    this.updateTask(taskId, { status: 'running', progress: 0 });
+
+    try {
+      const result = await this.importHandler.importPackage(
+        filePath,
+        options,
+        (progress: ImportProgress) => {
+          this.updateTask(taskId, {
+            progress: progress.totalProgress,
+            message: progress.phaseDescription,
+            detailedProgress: progress
+          });
+        }
+      );
+
+      this.updateTask(taskId, {
+        status: 'completed',
+        progress: 100,
+        result,
+        message: `导入完成: ${result.imported} 个文件`
+      });
+
+      this.logger.info(
+        { taskId, imported: result.imported },
+        'Local import task completed: @{imported} files imported'
+      );
+    } catch (error: any) {
+      this.updateTask(taskId, {
+        status: 'failed',
+        error: error.message
+      });
+      this.logger.error(
+        { taskId, error: error.message },
+        'Local import task failed: @{error}'
+      );
+    }
+    // 注意：本地路径导入不删除源文件
   }
 
   private handleStatus(req: Request, res: Response): void {
