@@ -168,8 +168,9 @@ export class ImportHandler {
       let versions = 0;
 
       for (const file of manifest.files) {
+        const normalizedPath = this.normalizePackagePath(file.path);
         const sourcePath = path.join(tempDir, file.path);
-        const destPath = path.join(this.storagePath, file.path);
+        const destPath = path.join(this.storagePath, normalizedPath);
 
         try {
           // 检查目标文件是否存在
@@ -192,7 +193,7 @@ export class ImportHandler {
             imported++;
 
             if (file.packageName) {
-              packages.add(file.packageName);
+              packages.add(this.normalizePackagePath(file.packageName));
             }
             if (file.type === 'tarball') {
               versions++;
@@ -315,6 +316,14 @@ export class ImportHandler {
         // 忽略清理错误
       }
     }
+  }
+
+  /**
+   * 规范化包路径，将 URL 编码的 %2f 解码为 /
+   * 例如: @babel%2fcore/core-7.26.0.tgz -> @babel/core/core-7.26.0.tgz
+   */
+  private normalizePackagePath(p: string): string {
+    return p.replace(/%2f/gi, '/');
   }
 
   /**

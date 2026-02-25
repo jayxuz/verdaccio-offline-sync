@@ -204,8 +204,8 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
     // 合并选项
     const syncOptions = {
-      updateToLatest: true,
-      completeSiblingVersions: false,
+      updateToLatest: false,
+      completeSiblingVersions: true,
       includeDev: false,
       includePeer: true,
       includeOptional: true,
@@ -347,8 +347,8 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     ];
 
     const syncOptions = {
-      updateToLatest: true,
-      completeSiblingVersions: false,
+      updateToLatest: false,
+      completeSiblingVersions: true,
       includeDev: false,
       includePeer: true,
       includeOptional: true,

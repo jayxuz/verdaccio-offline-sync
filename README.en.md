@@ -157,8 +157,8 @@ middlewares:
       - os: win32
         arch: arm64
     sync:
-      updateToLatest: true
-      completeSiblingVersions: false
+      updateToLatest: false
+      completeSiblingVersions: true
       includeDev: false
       includePeer: true
       includeOptional: true
@@ -576,8 +576,8 @@ Automatically detects and downloads platform-specific packages:
 | `concurrency` | number | 5 | Concurrent downloads |
 | `timeout` | number | 60000 | Request timeout (ms) |
 | `platforms` | array | - | Target platform list |
-| `sync.updateToLatest` | boolean | true | Update to latest versions |
-| `sync.completeSiblingVersions` | boolean | false | Complete sibling versions (latest patch in same minor + latest minor in same major) |
+| `sync.updateToLatest` | boolean | false | Update to latest versions |
+| `sync.completeSiblingVersions` | boolean | true | Complete sibling versions (latest patch in same minor + latest minor in same major) |
 | `sync.includeDev` | boolean | false | Include devDependencies |
 | `sync.includePeer` | boolean | true | Include peerDependencies |
 | `sync.includeOptional` | boolean | true | Include optionalDependencies |

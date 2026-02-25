@@ -158,8 +158,8 @@ middlewares:
       - os: win32
         arch: arm64
     sync:
-      updateToLatest: true
-      completeSiblingVersions: false
+      updateToLatest: false
+      completeSiblingVersions: true
       includeDev: false
       includePeer: true
       includeOptional: true
@@ -577,8 +577,8 @@ curl -X POST http://external:4873/_/ingest/sync \
 | `concurrency` | number | 5 | 并发下载数 |
 | `timeout` | number | 60000 | 请求超时（毫秒） |
 | `platforms` | array | - | 目标平台列表 |
-| `sync.updateToLatest` | boolean | true | 是否更新到最新版本 |
-| `sync.completeSiblingVersions` | boolean | false | 是否补全同级版本（同 minor 最新 patch + 同 major 最新 minor） |
+| `sync.updateToLatest` | boolean | false | 是否更新到最新版本 |
+| `sync.completeSiblingVersions` | boolean | true | 是否补全同级版本（同 minor 最新 patch + 同 major 最新 minor） |
 | `sync.includeDev` | boolean | false | 是否包含 devDependencies |
 | `sync.includePeer` | boolean | true | 是否包含 peerDependencies |
 | `sync.includeOptional` | boolean | true | 是否包含 optionalDependencies |

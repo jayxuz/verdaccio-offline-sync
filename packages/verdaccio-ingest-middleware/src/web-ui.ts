@@ -723,7 +723,7 @@ export function getWebUIHTML(config: any): string {
         <div class="form-group">
           <label>同步选项</label>
           <div class="option-row">
-            <label><input type="checkbox" id="updateToLatest" checked><span>更新到最新版本</span></label>
+            <label><input type="checkbox" id="updateToLatest"><span>更新到最新版本</span></label>
             <button class="help-btn" type="button">?<span class="tooltip">检查已缓存包是否有更新版本，如有则下载最新版本到本地缓存</span></button>
           </div>
           <div class="option-row">
@@ -735,7 +735,7 @@ export function getWebUIHTML(config: any): string {
             <button class="help-btn" type="button">?<span class="tooltip">下载 peerDependencies 中声明的包，这些是运行时需要的依赖</span></button>
           </div>
           <div class="option-row">
-            <label><input type="checkbox" id="completeSiblingVersions"><span>补全同级版本</span></label>
+            <label><input type="checkbox" id="completeSiblingVersions" checked><span>补全同级版本</span></label>
             <button class="help-btn" type="button">?<span class="tooltip">对每个已缓存的版本，自动下载同 minor 系列的最新 patch 版本和同 major 系列的最新 minor 版本。例如本地有 6.3.2，则补全 6.3.x 最新和 6.x.x 最新</span></button>
           </div>
         </div>

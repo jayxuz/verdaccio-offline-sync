@@ -47,8 +47,8 @@ middlewares:
         arch: arm64
     # Sync options
     sync:
-      updateToLatest: true
-      completeSiblingVersions: false
+      updateToLatest: false
+      completeSiblingVersions: true
       includeDev: false
       includePeer: true
       includeOptional: true

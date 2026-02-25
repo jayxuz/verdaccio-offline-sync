@@ -75,7 +75,7 @@ export class DifferentialScanner {
         }
 
         if (entry.isDirectory()) {
-          // 递归扫描子目录
+          // 递归扫描子目录（使用原始路径以匹配实际文件系统）
           await this.scanDirectory(entryRelativePath, files, since, includeMetadata);
         } else if (entry.isFile()) {
           // 检查文件类型
@@ -91,14 +91,19 @@ export class DifferentialScanner {
           // 检查修改时间
           if (since && fileStat.mtime <= since) continue;
 
-          // 解析包名和版本
-          const packageName = this.extractPackageName(relativePath);
+          // 规范化路径：将 %2f 解码为 /，确保 scoped 包使用嵌套目录结构
+          const normalizedRelativePath = this.normalizePackagePath(entryRelativePath);
+
+          // 解析包名和版本（使用规范化后的路径）
+          const packageName = this.extractPackageName(
+            this.normalizePackagePath(relativePath)
+          );
           const version = fileType === 'tarball'
             ? this.extractVersionFromFilename(packageName, entry.name)
             : undefined;
 
           files.push({
-            relativePath: entryRelativePath,
+            relativePath: normalizedRelativePath,
             absolutePath: entryAbsolutePath,
             size: fileStat.size,
             mtime: fileStat.mtime,
@@ -114,6 +119,14 @@ export class DifferentialScanner {
         'Failed to scan directory @{path}: @{error}'
       );
     }
+  }
+
+  /**
+   * 规范化包路径，将 URL 编码的 %2f 解码为 /
+   * 例如: @babel%2fcore -> @babel/core
+   */
+  private normalizePackagePath(p: string): string {
+    return p.replace(/%2f/gi, '/');
   }
 
   /**
