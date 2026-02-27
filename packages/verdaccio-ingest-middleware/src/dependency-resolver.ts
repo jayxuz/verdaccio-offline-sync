@@ -33,6 +33,8 @@ export class DependencyResolver {
   private registry: string;
   // 缓存 packument（包含所有版本信息），避免重复请求
   private packumentCache: Map<string, any> = new Map();
+  // 正在进行中的 packument 请求（避免并发场景下重复请求同一包）
+  private packumentInflight: Map<string, Promise<any | null>> = new Map();
   // 并发控制
   private concurrencyLimit: ReturnType<typeof pLimit>;
 
@@ -40,7 +42,7 @@ export class DependencyResolver {
     this.config = config;
     this.logger = logger;
     this.registry = config.upstreamRegistry || 'https://registry.npmjs.org';
-    this.concurrencyLimit = pLimit(config.concurrency || 10);
+    this.concurrencyLimit = pLimit(config.concurrency || 5);
   }
 
   /**
@@ -132,6 +134,13 @@ export class DependencyResolver {
     onProgress?: ProgressCallback,
     progressStartTime?: number
   ): Promise<PackageToDownload[]> {
+    type AnalysisTarget = {
+      name: string;
+      versionRange: string;
+      requiredBy?: string;
+      reason?: PackageToDownload['reason'];
+    };
+
     const missing: PackageToDownload[] = [];
     const cachedMap = new Map(cached.map((p) => [p.name, p]));
     const metadataMap = new Map(metadata.map((m) => [m.name, m]));
@@ -144,14 +153,28 @@ export class DependencyResolver {
     const startTime = progressStartTime || Date.now();
 
     // 当前层待处理的包
-    let currentLayer: Array<{
-      name: string;
-      versionRange: string;
-      requiredBy?: string;
-      reason?: PackageToDownload['reason'];
-    }> = [];
+    const firstLayerMap = new Map<string, AnalysisTarget>();
+    const addFirstLayerTarget = (target: AnalysisTarget): void => {
+      const key = `${target.name}@${target.versionRange}`;
+      if (!firstLayerMap.has(key)) {
+        firstLayerMap.set(key, target);
+      }
+    };
 
-    // 第一步：收集需要更新的包作为第一层
+    // 第一步：将本地已缓存版本作为根节点，确保会递归分析其依赖
+    // 这样即使包本身不升级，也能补齐其依赖树中缺失的依赖。
+    for (const pkg of cached) {
+      for (const localVersion of pkg.versions) {
+        addFirstLayerTarget({
+          name: pkg.name,
+          versionRange: localVersion,
+          requiredBy: 'local-cache',
+          reason: 'missing-dependency'
+        });
+      }
+    }
+
+    // 第二步：收集需要更新/补齐的版本作为附加根节点
     for (const pkg of cached) {
       const meta = metadataMap.get(pkg.name);
       if (!meta) continue;
@@ -159,7 +182,7 @@ export class DependencyResolver {
       if (options.updateToLatest) {
         const latestVersion = meta.distTags.latest;
         if (latestVersion && !pkg.versions.includes(latestVersion)) {
-          currentLayer.push({
+          addFirstLayerTarget({
             name: pkg.name,
             versionRange: latestVersion,
             requiredBy: 'update-to-latest',
@@ -172,7 +195,7 @@ export class DependencyResolver {
       if (options.completeSiblingVersions) {
         const siblingVersions = this.findSiblingVersions(pkg.versions, meta.versions);
         for (const sibVer of siblingVersions) {
-          currentLayer.push({
+          addFirstLayerTarget({
             name: pkg.name,
             versionRange: sibVer,
             requiredBy: 'complete-sibling-versions',
@@ -181,6 +204,9 @@ export class DependencyResolver {
         }
       }
     }
+
+    // 当前层待处理的包
+    let currentLayer = Array.from(firstLayerMap.values());
 
     let depth = 0;
     const maxDepth = options.maxDepth || 50;
@@ -202,12 +228,8 @@ export class DependencyResolver {
       await this.prefetchPackuments(packageNames);
 
       // 下一层待处理的包
-      const nextLayer: Array<{
-        name: string;
-        versionRange: string;
-        requiredBy?: string;
-        reason?: PackageToDownload['reason'];
-      }> = [];
+      const nextLayer: AnalysisTarget[] = [];
+      const nextLayerSeen = new Set<string>();
 
       // 处理当前层的每个包
       for (const { name, versionRange, requiredBy, reason } of currentLayer) {
@@ -277,14 +299,18 @@ export class DependencyResolver {
 
               // 收集子依赖到下一层
               for (const [depName, depRange] of Object.entries(dependencies)) {
-                const depKey = `${depName}@${depRange}`;
-
                 // 检查本地是否有满足版本范围的版本
                 const depCached = cachedMap.get(depName);
                 const hasSatisfyingVersion = depCached &&
                   this.hasMatchingVersion(depCached.versions, depRange as string);
 
                 if (!hasSatisfyingVersion) {
+                  const nextKey = `${depName}@${depRange}`;
+                  if (nextLayerSeen.has(nextKey)) {
+                    continue;
+                  }
+                  nextLayerSeen.add(nextKey);
+
                   nextLayer.push({
                     name: depName,
                     versionRange: depRange as string,
@@ -435,22 +461,34 @@ export class DependencyResolver {
       return this.packumentCache.get(name);
     }
 
-    try {
-      const packument = await pacote.packument(name, {
-        registry: this.registry,
-        fullMetadata: true
-      });
-      // 精简后再缓存，大幅减少内存占用
-      const trimmed = this.trimPackument(packument);
-      this.packumentCache.set(name, trimmed);
-      return trimmed;
-    } catch (error: any) {
-      this.logger.warn(
-        { name, error: error.message },
-        'Failed to get packument for @{name}: @{error}'
-      );
-      return null;
+    const inflight = this.packumentInflight.get(name);
+    if (inflight) {
+      return inflight;
     }
+
+    const request = (async () => {
+      try {
+        const packument = await pacote.packument(name, {
+          registry: this.registry,
+          fullMetadata: true
+        });
+        // 精简后再缓存，大幅减少内存占用
+        const trimmed = this.trimPackument(packument);
+        this.packumentCache.set(name, trimmed);
+        return trimmed;
+      } catch (error: any) {
+        this.logger.warn(
+          { name, error: error.message },
+          'Failed to get packument for @{name}: @{error}'
+        );
+        return null;
+      } finally {
+        this.packumentInflight.delete(name);
+      }
+    })();
+
+    this.packumentInflight.set(name, request);
+    return request;
   }
 
   /**
@@ -649,5 +687,6 @@ export class DependencyResolver {
    */
   clearCache(): void {
     this.packumentCache.clear();
+    this.packumentInflight.clear();
   }
 }

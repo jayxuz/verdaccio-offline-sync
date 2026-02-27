@@ -36,6 +36,7 @@ English | [中文](./README.md)
 - **Metadata Sync** - Sync package metadata from upstream registry to local storage, supports single package and batch sync
 - **Sibling Version Completion** - Automatically downloads the latest patch within the same minor and the latest minor within the same major
 - **Local Path Import** - Import differential packages directly from server local paths
+- **Dependency Chain & Rebuild Hardening** - Fixes missing transitive dependency downloads and improves metadata persistence in `/ingest/sync` and `/ingest/rebuild-index`
 
 ## Plugin Components
 
@@ -143,6 +144,7 @@ middlewares:
   ingest-middleware:
     enabled: true
     upstreamRegistry: https://registry.npmjs.org
+    # Processing concurrency for download/scan/analyze/export (default: 5)
     concurrency: 5
     timeout: 60000
     platforms:
@@ -186,6 +188,8 @@ packages:
 filters:
   metadata-healer:
     enabled: true
+    # Batch metadata sync concurrency for /sync-all (default: 5)
+    syncConcurrency: 5
     scanCacheTTL: 60000
     shasumCacheSize: 10000
     autoUpdateLatest: true
@@ -573,7 +577,7 @@ Automatically detects and downloads platform-specific packages:
 |--------|------|---------|-------------|
 | `enabled` | boolean | true | Enable plugin |
 | `upstreamRegistry` | string | From uplinks | Upstream registry URL (auto-detected from uplinks if not set) |
-| `concurrency` | number | 5 | Concurrent downloads |
+| `concurrency` | number | 5 | Processing concurrency (download/scan/analyze/export) |
 | `timeout` | number | 60000 | Request timeout (ms) |
 | `platforms` | array | - | Target platform list |
 | `sync.updateToLatest` | boolean | false | Update to latest versions |
@@ -588,6 +592,7 @@ Automatically detects and downloads platform-specific packages:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enabled` | boolean | true | Enable plugin |
+| `syncConcurrency` | number | 5 | Batch metadata sync concurrency (`/sync-all`) |
 | `scanCacheTTL` | number | 60000 | Scan cache TTL (ms) |
 | `shasumCacheSize` | number | 10000 | Shasum cache size |
 | `autoUpdateLatest` | boolean | true | Auto-update latest tag |

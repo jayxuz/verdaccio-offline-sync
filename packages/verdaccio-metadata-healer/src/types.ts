@@ -8,6 +8,8 @@ export interface HealerConfig {
   storagePath?: string;
   scanCacheTTL?: number;
   shasumCacheSize?: number;
+  /** 批量同步元数据时的并发数（默认 5） */
+  syncConcurrency?: number;
   autoUpdateLatest?: boolean;
   /** 是否在 filter_metadata 时自动保存元数据到本地（默认 true） */
   autoSaveMetadata?: boolean;

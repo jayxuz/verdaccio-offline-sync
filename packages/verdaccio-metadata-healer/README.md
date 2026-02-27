@@ -47,6 +47,8 @@ filters:
   metadata-healer:
     # Enable/disable the filter (default: true)
     enabled: true
+    # Batch metadata sync concurrency for /sync-all (default: 5)
+    syncConcurrency: 5
     # Storage path (optional, defaults to Verdaccio storage)
     storagePath: /path/to/storage
     # Auto-update dist-tags.latest (default: true)

@@ -36,6 +36,7 @@
 - **元数据同步** - 支持从上游仓库同步包元数据到本地，支持单包和批量同步
 - **同级版本补全** - 自动下载同 minor 最新 patch 和同 major 最新 minor 版本
 - **本地路径导入** - 支持从服务器本地路径直接导入差分包
+- **链式依赖与重建增强** - 修复链式依赖漏下载问题，增强 `/ingest/sync` 与 `/ingest/rebuild-index` 的元数据写回能力
 
 ## 插件组成
 
@@ -144,6 +145,7 @@ middlewares:
   ingest-middleware:
     enabled: true
     upstreamRegistry: https://registry.npmmirror.com
+    # 并发处理数（下载/扫描/分析/导出链路，默认：5）
     concurrency: 5
     timeout: 60000
     platforms:
@@ -187,6 +189,8 @@ packages:
 filters:
   metadata-healer:
     enabled: true
+    # 批量元数据同步并发数（默认：5）
+    syncConcurrency: 5
     scanCacheTTL: 60000
     shasumCacheSize: 10000
     autoUpdateLatest: true
@@ -574,7 +578,7 @@ curl -X POST http://external:4873/_/ingest/sync \
 |--------|------|--------|------|
 | `enabled` | boolean | true | 是否启用插件 |
 | `upstreamRegistry` | string | 取自 uplinks 配置 | 上游仓库地址（未配置时自动从 uplinks 中获取第一个 uplink 的 URL） |
-| `concurrency` | number | 5 | 并发下载数 |
+| `concurrency` | number | 5 | 并发处理数（下载/扫描/分析/导出链路） |
 | `timeout` | number | 60000 | 请求超时（毫秒） |
 | `platforms` | array | - | 目标平台列表 |
 | `sync.updateToLatest` | boolean | false | 是否更新到最新版本 |
@@ -589,6 +593,7 @@ curl -X POST http://external:4873/_/ingest/sync \
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `enabled` | boolean | true | 是否启用插件 |
+| `syncConcurrency` | number | 5 | 批量元数据同步并发数（`/sync-all`） |
 | `scanCacheTTL` | number | 60000 | 扫描缓存 TTL（毫秒） |
 | `shasumCacheSize` | number | 10000 | shasum 缓存大小 |
 | `autoUpdateLatest` | boolean | true | 自动更新 latest 标签 |

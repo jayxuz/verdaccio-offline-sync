@@ -47,6 +47,8 @@ filters:
   metadata-healer:
     # 启用/禁用过滤器（默认：true）
     enabled: true
+    # 批量元数据同步并发数（/sync-all，默认：5）
+    syncConcurrency: 5
     # 存储路径（可选，默认使用 Verdaccio 存储路径）
     storagePath: /path/to/storage
     # 自动更新 dist-tags.latest（默认：true）

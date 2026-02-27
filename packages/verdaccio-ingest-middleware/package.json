@@ -1,6 +1,6 @@
 {
   "name": "verdaccio-ingest-middleware",
-  "version": "1.2.2",
+  "version": "1.2.4",
   "description": "Verdaccio middleware plugin for recursive package ingestion with multi-platform support",
   "main": "build/index.js",
   "types": "build/index.d.ts",

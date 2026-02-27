@@ -1,6 +1,8 @@
 import { Router, Express, Request, Response, json } from 'express';
 import { pluginUtils } from '@verdaccio/core';
 import { Config, Logger } from '@verdaccio/types';
+import pLimit from 'p-limit';
+import semver from 'semver';
 import { StorageScanner } from './storage-scanner';
 import { PackageDownloader } from './package-downloader';
 import { DependencyResolver } from './dependency-resolver';
@@ -83,8 +85,9 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     this.scanner = new StorageScanner(this.config as IngestConfig, this.storagePath, this.logger);
     this.downloader = new PackageDownloader(this.config as IngestConfig, this.storagePath, this.logger);
     // 初始化差分导出相关
-    this.diffScanner = new DifferentialScanner(this.storagePath, this.logger);
-    this.diffPacker = new DifferentialPacker(this.storagePath, this.logger);
+    const concurrency = (this.config as IngestConfig).concurrency || 5;
+    this.diffScanner = new DifferentialScanner(this.storagePath, this.logger, concurrency);
+    this.diffPacker = new DifferentialPacker(this.storagePath, this.logger, concurrency);
 
     const router = Router();
 
@@ -162,17 +165,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       const refreshed = await this.resolver.refreshMetadata(cachedPackages);
 
       // 保存更新后的元数据
-      for (const meta of refreshed) {
-        try {
-          const packument = await this.downloader.downloadPackument(meta.name);
-          await this.downloader.savePackument(meta.name, packument);
-        } catch (error: any) {
-          this.logger.warn(
-            { name: meta.name, error: error.message },
-            'Failed to save packument for @{name}: @{error}'
-          );
-        }
-      }
+      await this.savePackumentsForPackages(refreshed.map((meta) => meta.name));
 
       res.json({
         success: true,
@@ -186,6 +179,9 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     } catch (error: any) {
       this.logger.error({ error: error.message }, 'Refresh failed: @{error}');
       res.status(500).json({ success: false, error: error.message });
+    } finally {
+      this.resolver.clearCache();
+      this.downloader.clearRequestCache();
     }
   }
 
@@ -278,36 +274,62 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         packagesToDownload,
         (this.config as IngestConfig).concurrency || 5
       );
+      const downloadedPackageNames = new Set<string>(
+        downloadResults.map((result) => result.package.name)
+      );
       this.updateTask(taskId, { progress: 70 });
 
       // 5. 下载多平台二进制包
       this.updateTask(taskId, { message: 'Downloading platform binaries...' });
-      for (const pkg of cachedPackages) {
-        const isBinary = await this.downloader.detectBinaryPackage(
-          pkg.name,
-          pkg.latestVersion || pkg.versions[0]
-        );
+      const binaryLimit = pLimit(this.getConcurrency());
+      let binaryProcessed = 0;
+      const binaryTotal = Math.max(1, cachedPackages.length);
 
-        if (isBinary) {
-          await this.downloader.downloadForPlatforms(
-            pkg.name,
-            pkg.latestVersion || pkg.versions[0],
-            platforms
-          );
-        }
-      }
+      await Promise.all(
+        cachedPackages.map((pkg) =>
+          binaryLimit(async () => {
+            const targetVersion = pkg.latestVersion || pkg.versions[0];
+            const isBinary = await this.downloader.detectBinaryPackage(
+              pkg.name,
+              targetVersion
+            );
+
+            if (isBinary) {
+              const platformResults = await this.downloader.downloadForPlatforms(
+                pkg.name,
+                targetVersion,
+                platforms
+              );
+              for (const result of platformResults) {
+                downloadedPackageNames.add(result.package.name);
+              }
+            }
+
+            binaryProcessed++;
+            this.updateTask(taskId, {
+              progress: 70 + Math.round((binaryProcessed / binaryTotal) * 20),
+              message: `Downloading platform binaries (${binaryProcessed}/${binaryTotal})`
+            });
+          })
+        )
+      );
       this.updateTask(taskId, { progress: 90 });
 
       // 6. 保存元数据
       this.updateTask(taskId, { message: 'Saving metadata...' });
-      for (const meta of refreshedMetadata) {
-        try {
-          const packument = await this.downloader.downloadPackument(meta.name);
-          await this.downloader.savePackument(meta.name, packument);
-        } catch {
-          // 忽略保存失败
+      const metadataTargets = [
+        ...refreshedMetadata.map((meta) => meta.name),
+        ...Array.from(downloadedPackageNames)
+      ];
+      await this.savePackumentsForPackages(
+        metadataTargets,
+        (completed, total, packageName) => {
+          this.updateTask(taskId, {
+            progress: 90 + Math.round((completed / Math.max(1, total)) * 10),
+            message: `Saving metadata (${completed}/${total}): ${packageName}`
+          });
         }
-      }
+      );
 
       const result: SyncResult = {
         success: true,
@@ -325,12 +347,14 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
       return result;
     } catch (error: any) {
-      this.resolver.clearCache();
       this.updateTask(taskId, {
         status: 'failed',
         error: error.message
       });
       throw error;
+    } finally {
+      this.resolver.clearCache();
+      this.downloader.clearRequestCache();
     }
   }
 
@@ -509,46 +533,52 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
       const platformPackages: PackageToDownload[] = [];
       let binaryChecked = 0;
+      const binaryTotal = Math.max(1, cachedPackages.length);
+      const binaryLimit = pLimit(this.getConcurrency());
 
-      for (const pkg of cachedPackages) {
-        binaryChecked++;
-        const isBinary = await this.downloader.detectBinaryPackage(
-          pkg.name,
-          pkg.latestVersion || pkg.versions[0]
-        );
+      await Promise.all(
+        cachedPackages.map((pkg) =>
+          binaryLimit(async () => {
+            const targetVersion = pkg.latestVersion || pkg.versions[0];
+            const isBinary = await this.downloader.detectBinaryPackage(
+              pkg.name,
+              targetVersion
+            );
 
-        if (isBinary) {
-          const platformDeps = await this.downloader.getPlatformDependencies(
-            pkg.name,
-            pkg.latestVersion || pkg.versions[0],
-            targetPlatforms
-          );
-          for (const dep of platformDeps) {
-            platformPackages.push({
-              name: dep.name,
-              version: dep.version,
-              reason: 'platform-binary',
-              requiredBy: `${pkg.name}@${pkg.latestVersion || pkg.versions[0]}`
+            if (isBinary) {
+              const platformDeps = await this.downloader.getPlatformDependencies(
+                pkg.name,
+                targetVersion,
+                targetPlatforms
+              );
+              for (const dep of platformDeps) {
+                platformPackages.push({
+                  name: dep.name,
+                  version: dep.version,
+                  reason: 'platform-binary',
+                  requiredBy: `${pkg.name}@${targetVersion}`
+                });
+              }
+            }
+
+            binaryChecked++;
+            const binaryProgress = Math.round((binaryChecked / binaryTotal) * 100);
+            this.updateTask(taskId, {
+              progress: 80 + Math.round(binaryProgress * 0.15), // 80-95%
+              detailedProgress: {
+                phase: 'detecting-binaries',
+                phaseProgress: binaryProgress,
+                totalProgress: 80 + Math.round(binaryProgress * 0.15),
+                currentPackage: pkg.name,
+                processed: binaryChecked,
+                total: cachedPackages.length,
+                startTime,
+                phaseDescription: `检测二进制包: ${pkg.name}`
+              }
             });
-          }
-        }
-
-        // 更新进度
-        const binaryProgress = Math.round((binaryChecked / cachedPackages.length) * 100);
-        this.updateTask(taskId, {
-          progress: 80 + Math.round(binaryProgress * 0.15), // 80-95%
-          detailedProgress: {
-            phase: 'detecting-binaries',
-            phaseProgress: binaryProgress,
-            totalProgress: 80 + Math.round(binaryProgress * 0.15),
-            currentPackage: pkg.name,
-            processed: binaryChecked,
-            total: cachedPackages.length,
-            startTime,
-            phaseDescription: `检测二进制包: ${pkg.name}`
-          }
-        });
-      }
+          })
+        )
+      );
 
       // 合并并去重
       const allPackages = [...missingPackages, ...platformPackages];
@@ -593,13 +623,15 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
       return analysisResult;
     } catch (error: any) {
-      // 出错时也要释放缓存，防止内存泄漏
-      this.resolver.clearCache();
       this.updateTask(taskId, {
         status: 'failed',
         error: error.message
       });
       throw error;
+    } finally {
+      // 出错时也要释放缓存，防止内存泄漏
+      this.resolver.clearCache();
+      this.downloader.clearRequestCache();
     }
   }
 
@@ -670,6 +702,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
     const results: PackageDownloadStatus[] = [];
     const failedPackages: PackageToDownload[] = [];
+    const downloadedPackageNames = new Set<string>();
     const concurrency = (this.config as IngestConfig).concurrency || 5;
     let completed = 0;
 
@@ -688,14 +721,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
             const result = await this.downloader.downloadPackage(pkg.name, pkg.version);
             status.status = 'success';
             status.size = result?.size;
-
-            // 保存元数据
-            try {
-              const packument = await this.downloader.downloadPackument(pkg.name);
-              await this.downloader.savePackument(pkg.name, packument);
-            } catch {
-              // 忽略元数据保存失败
-            }
+            downloadedPackageNames.add(pkg.name);
           } catch (error: any) {
             status.status = 'failed';
             status.error = error.message;
@@ -714,6 +740,14 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
           progress,
           message: `Downloaded ${completed}/${packages.length} packages`
         });
+      }
+
+      // 所有版本下载完成后，再按包维度刷新一次元数据，避免重复请求同一包
+      if (downloadedPackageNames.size > 0) {
+        this.updateTask(taskId, {
+          message: `Refreshing metadata for ${downloadedPackageNames.size} packages`
+        });
+        await this.savePackumentsForPackages(Array.from(downloadedPackageNames));
       }
 
       const batchResult: DownloadBatchResult = {
@@ -738,6 +772,8 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         error: error.message
       });
       throw error;
+    } finally {
+      this.downloader.clearRequestCache();
     }
   }
 
@@ -769,6 +805,49 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       total: packages.length,
       message: 'Retry task started'
     });
+  }
+
+  private getConcurrency(): number {
+    const configured = Number((this.config as IngestConfig).concurrency);
+    if (!Number.isFinite(configured) || configured <= 0) {
+      return 5;
+    }
+    return Math.max(1, Math.min(50, Math.floor(configured)));
+  }
+
+  private async savePackumentsForPackages(
+    packageNames: string[],
+    onProgress?: (completed: number, total: number, packageName: string) => void
+  ): Promise<void> {
+    const uniqueNames = Array.from(new Set(packageNames));
+    if (uniqueNames.length === 0) {
+      return;
+    }
+
+    const limit = pLimit(this.getConcurrency());
+    let completed = 0;
+    const total = uniqueNames.length;
+
+    await Promise.all(
+      uniqueNames.map((packageName) =>
+        limit(async () => {
+          try {
+            const packument = await this.downloader.downloadPackument(packageName);
+            await this.downloader.savePackument(packageName, packument);
+          } catch (error: any) {
+            this.logger.warn(
+              { name: packageName, error: error.message },
+              'Failed to save packument for @{name}: @{error}'
+            );
+          } finally {
+            completed++;
+            if (onProgress) {
+              onProgress(completed, total, packageName);
+            }
+          }
+        })
+      )
+    );
   }
 
   /**
@@ -836,6 +915,8 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     } catch (error: any) {
       this.logger.error({ error: error.message }, 'Platform download failed: @{error}');
       res.status(500).json({ success: false, error: error.message });
+    } finally {
+      this.downloader.clearRequestCache();
     }
   }
 
@@ -890,20 +971,27 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       const packages = await this.scanner.scanAllPackages();
       let healed = 0;
       let tagsUpdated = 0;
+      let created = 0;
 
       // 2. 对每个包重建元数据
       for (const pkg of packages) {
         try {
-          // 读取现有的 package.json（如果存在）
+          // 读取现有的 package.json（如果不存在则创建基础结构）
           const existingPackument = await this.scanner.readPackument(pkg.name);
+          const packument: any = existingPackument || {
+            name: pkg.name,
+            versions: {},
+            'dist-tags': {},
+            _attachments: {},
+            time: {}
+          };
+          if (!existingPackument) {
+            created++;
+          }
 
-          // 检查是否有缺失的版本
-          const existingVersions = existingPackument
-            ? Object.keys(existingPackument.versions || {})
-            : [];
-          const missingVersions = pkg.versions.filter(
-            (v) => !existingVersions.includes(v)
-          );
+          const existingVersions = new Set(Object.keys(packument.versions || {}));
+          const missingVersions = pkg.versions.filter((v) => !existingVersions.has(v));
+          let changed = !existingPackument;
 
           if (missingVersions.length > 0) {
             this.logger.info(
@@ -918,9 +1006,11 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
                   pkg.name,
                   version
                 );
-                if (versionMeta && existingPackument) {
-                  existingPackument.versions[version] = versionMeta;
+                if (versionMeta) {
+                  packument.versions = packument.versions || {};
+                  packument.versions[version] = versionMeta;
                   healed++;
+                  changed = true;
                 }
               } catch (err: any) {
                 this.logger.warn(
@@ -929,29 +1019,24 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
                 );
               }
             }
+          }
 
-            // 更新 dist-tags.latest
-            if (existingPackument && pkg.versions.length > 0) {
-              const sortedVersions = [...pkg.versions].sort((a, b) => {
-                const semver = require('semver');
-                return semver.compare(b, a);
-              });
-              const stableVersions = sortedVersions.filter((v) => {
-                const semver = require('semver');
-                return !semver.prerelease(v);
-              });
-              const latest = stableVersions[0] || sortedVersions[0];
+          // 无论是否有缺失版本，都修正 latest 为本地可用的最高版本
+          const localLatest = this.findLatestVersion(pkg.versions);
+          const currentLatest = packument['dist-tags']?.latest;
+          if (localLatest && currentLatest !== localLatest) {
+            packument['dist-tags'] = packument['dist-tags'] || {};
+            packument['dist-tags'].latest = localLatest;
+            tagsUpdated++;
+            changed = true;
+          }
 
-              if (latest && existingPackument['dist-tags']?.latest !== latest) {
-                existingPackument['dist-tags'] = existingPackument['dist-tags'] || {};
-                existingPackument['dist-tags'].latest = latest;
-                tagsUpdated++;
-              }
-            }
+          if (changed) {
+            packument.time = packument.time || {};
+            packument.time.modified = new Date().toISOString();
 
-            // 保存更新后的 packument
-            if (existingPackument) {
-              await this.downloader.savePackument(pkg.name, existingPackument);
+            if (Object.keys(packument.versions || {}).length > 0) {
+              await this.downloader.savePackument(pkg.name, packument);
             }
           }
         } catch (err: any) {
@@ -963,20 +1048,32 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       }
 
       this.logger.info(
-        { scanned: packages.length, healed, tagsUpdated },
-        'Index rebuild completed: scanned @{scanned}, healed @{healed}, tags updated @{tagsUpdated}'
+        { scanned: packages.length, healed, tagsUpdated, created },
+        'Index rebuild completed: scanned @{scanned}, healed @{healed}, tags updated @{tagsUpdated}, created @{created}'
       );
 
       res.json({
         success: true,
         scanned: packages.length,
         healed,
-        tagsUpdated
+        tagsUpdated,
+        created
       });
     } catch (error: any) {
       this.logger.error({ error: error.message }, 'Index rebuild failed: @{error}');
       res.status(500).json({ success: false, error: error.message });
     }
+  }
+
+  private findLatestVersion(versions: string[]): string | undefined {
+    const validVersions = versions.filter((version) => semver.valid(version));
+    if (validVersions.length === 0) {
+      return undefined;
+    }
+
+    const stableVersions = validVersions.filter((version) => !semver.prerelease(version));
+    const candidates = stableVersions.length > 0 ? stableVersions : validVersions;
+    return candidates.sort(semver.rcompare)[0];
   }
 
   /**

@@ -3,6 +3,7 @@ import path from 'path';
 import { createReadStream } from 'fs';
 import { createGunzip } from 'zlib';
 import { createHash } from 'crypto';
+import pLimit from 'p-limit';
 import { Logger, Manifest, Version } from '@verdaccio/types';
 import { CachedPackage, IngestConfig } from './types';
 
@@ -25,6 +26,14 @@ export class StorageScanner {
     );
   }
 
+  private getScanConcurrency(): number {
+    const configured = Number(this.config.concurrency);
+    if (!Number.isFinite(configured) || configured <= 0) {
+      return 5;
+    }
+    return Math.max(1, Math.min(50, Math.floor(configured)));
+  }
+
   /**
    * 扫描所有已缓存的包
    */
@@ -44,26 +53,29 @@ export class StorageScanner {
         '[StorageScanner] Found @{count} entries in storage: @{entries}...'
       );
 
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
+      const limit = pLimit(this.getScanConcurrency());
+      const scanTasks = entries.map((entry) =>
+        limit(async () => {
+          if (!entry.isDirectory()) return [];
+          if (entry.name.startsWith('.')) return [];
 
-        // 跳过隐藏目录和特殊文件
-        if (entry.name.startsWith('.')) continue;
-
-        // 处理 scoped 包 (@scope/package)
-        if (entry.name.startsWith('@')) {
-          this.logger.debug(
-            { scope: entry.name },
-            '[StorageScanner] Scanning scoped packages in @{scope}'
-          );
-          const scopedPackages = await this.scanScopedPackages(entry.name);
-          packages.push(...scopedPackages);
-        } else {
-          const pkg = await this.scanPackage(entry.name);
-          if (pkg) {
-            packages.push(pkg);
+          // 处理 scoped 包 (@scope/package)
+          if (entry.name.startsWith('@')) {
+            this.logger.debug(
+              { scope: entry.name },
+              '[StorageScanner] Scanning scoped packages in @{scope}'
+            );
+            return this.scanScopedPackages(entry.name);
           }
-        }
+
+          const pkg = await this.scanPackage(entry.name);
+          return pkg ? [pkg] : [];
+        })
+      );
+
+      const scanned = await Promise.all(scanTasks);
+      for (const group of scanned) {
+        packages.push(...group);
       }
 
       this.logger.info(
@@ -93,22 +105,33 @@ export class StorageScanner {
         '[StorageScanner] Scanning scope @{scope} at @{scopePath}: found @{count} entries: @{entries}'
       );
 
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
+      const limit = pLimit(this.getScanConcurrency());
+      const scopedTasks = entries.map((entry) =>
+        limit(async () => {
+          if (!entry.isDirectory()) return null;
 
-        const packageName = `${scope}/${entry.name}`;
-        const pkg = await this.scanPackage(packageName);
-        if (pkg) {
-          packages.push(pkg);
-          this.logger.debug(
-            { packageName, versions: pkg.versions.length },
-            '[StorageScanner] Found package @{packageName} with @{versions} versions'
-          );
-        } else {
+          const packageName = `${scope}/${entry.name}`;
+          const pkg = await this.scanPackage(packageName);
+          if (pkg) {
+            this.logger.debug(
+              { packageName, versions: pkg.versions.length },
+              '[StorageScanner] Found package @{packageName} with @{versions} versions'
+            );
+            return pkg;
+          }
+
           this.logger.debug(
             { packageName },
             '[StorageScanner] Package @{packageName} has no .tgz files, skipping'
           );
+          return null;
+        })
+      );
+
+      const scopedPackages = await Promise.all(scopedTasks);
+      for (const pkg of scopedPackages) {
+        if (pkg) {
+          packages.push(pkg);
         }
       }
 

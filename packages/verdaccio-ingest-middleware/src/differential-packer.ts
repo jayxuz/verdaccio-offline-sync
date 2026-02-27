@@ -4,6 +4,7 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { pipeline } from 'stream/promises';
 import { createGzip, createGunzip } from 'zlib';
+import pLimit from 'p-limit';
 import tar from 'tar';
 import { Logger } from '@verdaccio/types';
 import {
@@ -21,10 +22,12 @@ import {
 export class DifferentialPacker {
   private storagePath: string;
   private logger: Logger;
+  private fileConcurrency: number;
 
-  constructor(storagePath: string, logger: Logger) {
+  constructor(storagePath: string, logger: Logger, fileConcurrency: number = 5) {
     this.storagePath = storagePath;
     this.logger = logger;
+    this.fileConcurrency = Math.max(1, Math.min(50, Math.floor(fileConcurrency)));
   }
 
   /**
@@ -66,60 +69,77 @@ export class DifferentialPacker {
     try {
       // 阶段 1: 计算文件校验和
       this.logger.info('Calculating file checksums...');
-      const filesWithChecksum: ExportFileEntry[] = [];
+      const filesWithChecksum: ExportFileEntry[] = new Array(files.length);
       let processed = 0;
       const total = files.length;
+      const checksumLimit = pLimit(this.fileConcurrency);
 
-      for (const file of files) {
-        const checksum = await this.calculateFileChecksum(file.absolutePath);
-        filesWithChecksum.push({
-          path: file.relativePath,
-          size: file.size,
-          mtime: file.mtime.toISOString(),
-          checksum,
-          type: file.type,
-          packageName: file.packageName,
-          version: file.version
-        });
+      await Promise.all(
+        files.map((file, index) =>
+          checksumLimit(async () => {
+            const checksum = await this.calculateFileChecksum(file.absolutePath);
+            filesWithChecksum[index] = {
+              path: file.relativePath,
+              size: file.size,
+              mtime: file.mtime.toISOString(),
+              checksum,
+              type: file.type,
+              packageName: file.packageName,
+              version: file.version
+            };
 
-        processed++;
-        if (onProgress) {
-          onProgress({
-            phase: 'calculating-checksums',
-            phaseProgress: Math.round((processed / total) * 100),
-            totalProgress: Math.round((processed / total) * 30),
-            currentFile: file.relativePath,
-            processed,
-            total,
-            startTime: timestamp.getTime(),
-            phaseDescription: `计算校验和: ${file.relativePath}`
-          });
-        }
-      }
+            processed++;
+            if (onProgress) {
+              onProgress({
+                phase: 'calculating-checksums',
+                phaseProgress: Math.round((processed / total) * 100),
+                totalProgress: Math.round((processed / total) * 30),
+                currentFile: file.relativePath,
+                processed,
+                total,
+                startTime: timestamp.getTime(),
+                phaseDescription: `计算校验和: ${file.relativePath}`
+              });
+            }
+          })
+        )
+      );
 
       // 阶段 2: 复制文件到临时目录
       this.logger.info('Copying files to temp directory...');
       processed = 0;
+      const copyLimit = pLimit(this.fileConcurrency);
+      const dirCreatePromises = new Map<string, Promise<void>>();
 
-      for (const file of files) {
-        const destPath = path.join(tempDir, file.relativePath);
-        await mkdir(path.dirname(destPath), { recursive: true });
-        await copyFile(file.absolutePath, destPath);
+      await Promise.all(
+        files.map((file) =>
+          copyLimit(async () => {
+            const destPath = path.join(tempDir, file.relativePath);
+            const dirPath = path.dirname(destPath);
+            let dirPromise = dirCreatePromises.get(dirPath);
+            if (!dirPromise) {
+              dirPromise = mkdir(dirPath, { recursive: true }).then(() => undefined);
+              dirCreatePromises.set(dirPath, dirPromise);
+            }
+            await dirPromise;
+            await copyFile(file.absolutePath, destPath);
 
-        processed++;
-        if (onProgress) {
-          onProgress({
-            phase: 'packing',
-            phaseProgress: Math.round((processed / total) * 100),
-            totalProgress: 30 + Math.round((processed / total) * 50),
-            currentFile: file.relativePath,
-            processed,
-            total,
-            startTime: timestamp.getTime(),
-            phaseDescription: `复制文件: ${file.relativePath}`
-          });
-        }
-      }
+            processed++;
+            if (onProgress) {
+              onProgress({
+                phase: 'packing',
+                phaseProgress: Math.round((processed / total) * 100),
+                totalProgress: 30 + Math.round((processed / total) * 50),
+                currentFile: file.relativePath,
+                processed,
+                total,
+                startTime: timestamp.getTime(),
+                phaseDescription: `复制文件: ${file.relativePath}`
+              });
+            }
+          })
+        )
+      );
 
       // 计算统计信息
       const packages = new Set(files.map(f => f.packageName));

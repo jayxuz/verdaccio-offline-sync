@@ -17,6 +17,8 @@
 - **同级版本补全**（新增）：对每个已缓存的版本，自动下载同 minor 系列的最新 patch 版本和同 major 系列的最新 minor 版本
 - **异步任务管理**：长时间运行的操作在后台执行，支持进度跟踪
 - **分析-确认-下载工作流**：在实际下载前预览将要下载的内容
+- **链式依赖补全修复**（v1.2.4）：分析/同步会从本地已缓存版本出发递归解析传递依赖（例如 `A -> B -> C`）
+- **元数据同步与重建增强**（v1.2.4）：`/sync` 会保存新下载包的元数据，`/rebuild-index` 支持创建缺失的 `package.json` 并刷新本地 `dist-tags.latest`
 
 ## 安装
 
@@ -35,7 +37,7 @@ middlewares:
   ingest-middleware:
     # 上游仓库 URL（可选，默认使用第一个 uplink）
     upstreamRegistry: https://registry.npmjs.org
-    # 下载并发数（默认：5）
+    # 并发处理数（下载/扫描/分析/导出链路，默认：5）
     concurrency: 5
     # 二进制包的目标平台
     platforms:

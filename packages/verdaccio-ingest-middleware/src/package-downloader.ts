@@ -19,6 +19,11 @@ export class PackageDownloader {
   private logger: Logger;
   private storagePath: string;
   private registry: string;
+  // 请求级缓存，避免短时间内重复拉取同一元数据
+  private packumentCache: Map<string, any> = new Map();
+  private packumentInflight: Map<string, Promise<any>> = new Map();
+  private manifestCache: Map<string, any> = new Map();
+  private manifestInflight: Map<string, Promise<any>> = new Map();
 
   constructor(config: IngestConfig, storagePath: string, logger: Logger) {
     this.config = config;
@@ -113,10 +118,7 @@ export class PackageDownloader {
     const integrity = `sha512-${sha512Hash.digest('base64')}`;
 
     // 获取完整 manifest
-    const manifest = await pacote.manifest(spec, {
-      registry: this.registry,
-      fullMetadata: true
-    });
+    const manifest = await this.getManifest(spec, true);
 
     this.logger.info(
       { name: pkg.name, version: pkg.version, shasum, size, registry: this.registry },
@@ -138,20 +140,98 @@ export class PackageDownloader {
    * 下载包的元数据（packument）
    */
   async downloadPackument(packageName: string): Promise<any> {
-    try {
-      const packument = await pacote.packument(packageName, {
-        registry: this.registry,
-        fullMetadata: true
-      });
+    return this.getPackument(packageName);
+  }
 
-      return packument;
-    } catch (error: any) {
-      this.logger.error(
-        { packageName, error: error.message },
-        'Failed to fetch packument for @{packageName}: @{error}'
-      );
-      throw error;
+  /**
+   * 清理请求缓存（任务结束后调用，释放内存）
+   */
+  clearRequestCache(): void {
+    this.packumentCache.clear();
+    this.packumentInflight.clear();
+    this.manifestCache.clear();
+    this.manifestInflight.clear();
+  }
+
+  /**
+   * 获取包的元数据（带缓存 + 并发去重）
+   */
+  private async getPackument(packageName: string): Promise<any> {
+    if (this.packumentCache.has(packageName)) {
+      return this.packumentCache.get(packageName);
     }
+
+    const inflight = this.packumentInflight.get(packageName);
+    if (inflight) {
+      return inflight;
+    }
+
+    const request = (async () => {
+      try {
+        const packument = await pacote.packument(packageName, {
+          registry: this.registry,
+          fullMetadata: true
+        });
+        this.packumentCache.set(packageName, packument);
+        return packument;
+      } catch (error: any) {
+        this.logger.error(
+          { packageName, error: error.message },
+          'Failed to fetch packument for @{packageName}: @{error}'
+        );
+        throw error;
+      } finally {
+        this.packumentInflight.delete(packageName);
+      }
+    })();
+
+    this.packumentInflight.set(packageName, request);
+    return request;
+  }
+
+  /**
+   * 获取 manifest（带缓存 + 并发去重）
+   */
+  private async getManifest(spec: string, fullMetadata: boolean): Promise<any> {
+    const cacheKey = `${fullMetadata ? 'full' : 'lean'}:${spec}`;
+    if (this.manifestCache.has(cacheKey)) {
+      return this.manifestCache.get(cacheKey);
+    }
+
+    const inflight = this.manifestInflight.get(cacheKey);
+    if (inflight) {
+      return inflight;
+    }
+
+    const request = (async () => {
+      try {
+        const manifest = await pacote.manifest(spec, {
+          registry: this.registry,
+          fullMetadata
+        });
+        this.manifestCache.set(cacheKey, manifest);
+        return manifest;
+      } catch (error: any) {
+        this.logger.warn(
+          { spec, error: error.message },
+          'Failed to fetch manifest for @{spec}: @{error}'
+        );
+        throw error;
+      } finally {
+        this.manifestInflight.delete(cacheKey);
+      }
+    })();
+
+    this.manifestInflight.set(cacheKey, request);
+    return request;
+  }
+
+  private getConcurrency(): number {
+    const configured = Number(this.config.concurrency);
+    if (!Number.isFinite(configured) || configured <= 0) {
+      return 5;
+    }
+    return Math.max(1, Math.min(50, Math.floor(configured)));
   }
 
   /**
@@ -178,10 +258,7 @@ export class PackageDownloader {
     version: string
   ): Promise<boolean> {
     try {
-      const manifest = await pacote.manifest(`${packageName}@${version}`, {
-        registry: this.registry,
-        fullMetadata: true
-      });
+      const manifest = await this.getManifest(`${packageName}@${version}`, true);
 
       // 检查 optionalDependencies 中的平台特定包
       const hasOptionalPlatformDeps = Object.keys(
@@ -205,43 +282,19 @@ export class PackageDownloader {
     version: string,
     platforms: PlatformConfig[]
   ): Promise<DownloadResult[]> {
-    const results: DownloadResult[] = [];
-
-    for (const platform of platforms) {
-      try {
-        const platformDeps = await this.resolvePlatformDependencies(
-          packageName,
-          version,
-          platform
-        );
-
-        for (const dep of platformDeps) {
-          try {
-            const pkg: ResolvedPackage = {
-              name: dep.name,
-              version: dep.version,
-              dist: { shasum: '', tarball: '' },
-              dependencies: {}
-            };
-
-            const result = await this.downloadPackage(pkg);
-            results.push(result);
-          } catch (error: any) {
-            this.logger.warn(
-              { dep: dep.name, version: dep.version, error: error.message },
-              'Failed to download platform dep @{dep}@@{version}: @{error}'
-            );
-          }
-        }
-      } catch (error: any) {
-        this.logger.warn(
-          { packageName, platform: `${platform.os}-${platform.arch}`, error: error.message },
-          'Failed to resolve platform deps for @{packageName} on @{platform}: @{error}'
-        );
-      }
+    const platformDeps = await this.getPlatformDependencies(packageName, version, platforms);
+    if (platformDeps.length === 0) {
+      return [];
     }
 
-    return results;
+    const packages: ResolvedPackage[] = platformDeps.map((dep) => ({
+      name: dep.name,
+      version: dep.version,
+      dist: { shasum: '', tarball: '' },
+      dependencies: {}
+    }));
+
+    return this.downloadAll(packages, this.getConcurrency());
   }
 
   /**
@@ -253,19 +306,24 @@ export class PackageDownloader {
     platforms: PlatformConfig[]
   ): Promise<Array<{ name: string; version: string }>> {
     const allDeps: Array<{ name: string; version: string }> = [];
+    const limit = pLimit(Math.min(this.getConcurrency(), Math.max(1, platforms.length)));
 
-    for (const platform of platforms) {
-      try {
-        const deps = await this.resolvePlatformDependencies(
-          packageName,
-          version,
-          platform
-        );
-        allDeps.push(...deps);
-      } catch {
-        // 忽略解析失败
-      }
-    }
+    await Promise.all(
+      platforms.map((platform) =>
+        limit(async () => {
+          try {
+            const deps = await this.resolvePlatformDependencies(
+              packageName,
+              version,
+              platform
+            );
+            allDeps.push(...deps);
+          } catch {
+            // 忽略解析失败
+          }
+        })
+      )
+    );
 
     // 去重
     const seen = new Set<string>();
@@ -285,32 +343,30 @@ export class PackageDownloader {
     version: string,
     platform: PlatformConfig
   ): Promise<Array<{ name: string; version: string }>> {
-    const manifest = await pacote.manifest(`${packageName}@${version}`, {
-      registry: this.registry,
-      fullMetadata: true
-    });
+    const manifest = await this.getManifest(`${packageName}@${version}`, true);
 
     const optionalDeps = manifest.optionalDependencies || {};
-    const platformDeps: Array<{ name: string; version: string }> = [];
+    const candidates = Object.entries(optionalDeps)
+      .filter(([name]) => this.matchesPlatform(name, platform));
+    const limit = pLimit(Math.min(this.getConcurrency(), Math.max(1, candidates.length)));
 
-    for (const [name, versionRange] of Object.entries(optionalDeps)) {
-      if (this.matchesPlatform(name, platform)) {
-        // 解析具体版本
-        try {
-          const depManifest = await pacote.manifest(`${name}@${versionRange}`, {
-            registry: this.registry
-          });
-          platformDeps.push({
-            name,
-            version: depManifest.version
-          });
-        } catch {
-          // 忽略无法解析的依赖
-        }
-      }
-    }
+    const results = await Promise.all(
+      candidates.map(([name, versionRange]) =>
+        limit(async () => {
+          try {
+            const depManifest = await this.getManifest(`${name}@${versionRange}`, false);
+            return {
+              name,
+              version: depManifest.version
+            };
+          } catch {
+            return null;
+          }
+        })
+      )
+    );
 
-    return platformDeps;
+    return results.filter((item): item is { name: string; version: string } => item !== null);
   }
 
   /**

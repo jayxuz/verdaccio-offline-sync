@@ -24,6 +24,8 @@ export class MetadataSyncer {
   private storagePath: string;
   private logger: Logger;
   private upstreamRegistry: string;
+  private readonly defaultSyncConcurrency = 5;
+  private remoteMetadataInflight: Map<string, Promise<Manifest>> = new Map();
 
   constructor(
     config: HealerConfig,
@@ -49,36 +51,52 @@ export class MetadataSyncer {
    * 从远端获取包的元数据
    */
   async fetchRemoteMetadata(packageName: string): Promise<Manifest> {
+    const inflight = this.remoteMetadataInflight.get(packageName);
+    if (inflight) {
+      return inflight;
+    }
+
     this.logger.info(
       { packageName, registry: this.upstreamRegistry },
       '[MetadataSyncer] Fetching metadata for @{packageName} from @{registry}'
     );
 
-    try {
-      const packument = await pacote.packument(packageName, {
-        registry: this.upstreamRegistry,
-        fullMetadata: true
-      });
+    const request = (async () => {
+      try {
+        const packument = await pacote.packument(packageName, {
+          registry: this.upstreamRegistry,
+          fullMetadata: true
+        });
 
-      this.logger.info(
-        {
-          packageName,
-          versions: Object.keys(packument.versions || {}).length,
-          latest: packument['dist-tags']?.latest
-        },
-        '[MetadataSyncer] Fetched @{packageName}: @{versions} versions, latest: @{latest}'
-      );
+        this.logger.info(
+          {
+            packageName,
+            versions: Object.keys(packument.versions || {}).length,
+            latest: packument['dist-tags']?.latest
+          },
+          '[MetadataSyncer] Fetched @{packageName}: @{versions} versions, latest: @{latest}'
+        );
 
-      // pacote.packument 返回的类型与 Verdaccio 的 Manifest 类型不完全兼容
-      // 但实际数据结构是兼容的，所以通过 unknown 进行类型转换
-      return packument as unknown as Manifest;
-    } catch (error: any) {
-      this.logger.error(
-        { packageName, error: error.message },
-        '[MetadataSyncer] Failed to fetch metadata for @{packageName}: @{error}'
-      );
-      throw error;
-    }
+        // pacote.packument 返回的类型与 Verdaccio 的 Manifest 类型不完全兼容
+        // 但实际数据结构是兼容的，所以通过 unknown 进行类型转换
+        return packument as unknown as Manifest;
+      } catch (error: any) {
+        this.logger.error(
+          { packageName, error: error.message },
+          '[MetadataSyncer] Failed to fetch metadata for @{packageName}: @{error}'
+        );
+        throw error;
+      } finally {
+        this.remoteMetadataInflight.delete(packageName);
+      }
+    })();
+
+    this.remoteMetadataInflight.set(packageName, request);
+    return request;
+  }
+
+  clearRemoteMetadataCache(): void {
+    this.remoteMetadataInflight.clear();
   }
 
   /**
@@ -231,29 +249,56 @@ export class MetadataSyncer {
     packageNames: string[],
     onProgress?: (current: number, total: number, packageName: string) => void
   ): Promise<SyncResult[]> {
-    const results: SyncResult[] = [];
-    const total = packageNames.length;
-
-    for (let i = 0; i < packageNames.length; i++) {
-      const packageName = packageNames[i];
-
-      if (onProgress) {
-        onProgress(i + 1, total, packageName);
-      }
-
-      const result = await this.syncPackage(packageName);
-      results.push(result);
-
-      // 添加小延迟，避免请求过快
-      if (i < packageNames.length - 1) {
-        await this.delay(100);
-      }
+    if (packageNames.length === 0) {
+      return [];
     }
 
-    return results;
+    // 保持输入顺序，同时去重，避免重复同步同一个包
+    const uniqueNames = Array.from(new Set(packageNames));
+    const total = uniqueNames.length;
+    const concurrency = this.getSyncConcurrency();
+    let completed = 0;
+
+    return this.mapWithConcurrency(uniqueNames, concurrency, async (packageName) => {
+      const result = await this.syncPackage(packageName);
+      completed++;
+
+      if (onProgress) {
+        onProgress(completed, total, packageName);
+      }
+
+      return result;
+    });
   }
 
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  private getSyncConcurrency(): number {
+    const configured = Number(this.config.syncConcurrency);
+    if (!Number.isFinite(configured) || configured <= 0) {
+      return this.defaultSyncConcurrency;
+    }
+    return Math.max(1, Math.min(50, Math.floor(configured)));
+  }
+
+  private async mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    mapper: (item: T, index: number) => Promise<R>
+  ): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    const workerCount = Math.max(1, Math.min(concurrency, items.length));
+    let nextIndex = 0;
+
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const currentIndex = nextIndex++;
+        if (currentIndex >= items.length) {
+          return;
+        }
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+      }
+    });
+
+    await Promise.all(workers);
+    return results;
   }
 }

@@ -45,6 +45,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
   private syncer!: MetadataSyncer;
   private syncTasks: Map<string, SyncTaskStatus> = new Map();
   private upstreamRegistry: string = 'https://registry.npmmirror.com';
+  private readonly defaultSyncConcurrency = 5;
   // Verdaccio 存储实例
   private verdaccioStorage: any;
 
@@ -735,31 +736,31 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
    * 扫描本地存储获取所有包名
    */
   private async scanLocalPackages(): Promise<string[]> {
-    const packages: string[] = [];
-
     try {
       const items = await readdir(this.storagePath, { withFileTypes: true });
+      const regularPackages: string[] = [];
+      const scopes: string[] = [];
 
       for (const item of items) {
-        if (!item.isDirectory() || item.name.startsWith('.')) {
-          continue;
-        }
-
+        if (!item.isDirectory() || item.name.startsWith('.')) continue;
         if (item.name.startsWith('@')) {
-          // Scoped package
-          const scopePath = join(this.storagePath, item.name);
-          const scopedItems = await readdir(scopePath, { withFileTypes: true });
-
-          for (const scopedItem of scopedItems) {
-            if (scopedItem.isDirectory() && !scopedItem.name.startsWith('.')) {
-              packages.push(`${item.name}/${scopedItem.name}`);
-            }
-          }
+          scopes.push(item.name);
         } else {
-          // Regular package
-          packages.push(item.name);
+          regularPackages.push(item.name);
         }
       }
+
+      const scopedGroups = await Promise.all(
+        scopes.map(async (scope) => {
+          const scopePath = join(this.storagePath, scope);
+          const scopedItems = await readdir(scopePath, { withFileTypes: true });
+          return scopedItems
+            .filter((scopedItem) => scopedItem.isDirectory() && !scopedItem.name.startsWith('.'))
+            .map((scopedItem) => `${scope}/${scopedItem.name}`);
+        })
+      );
+
+      return [...regularPackages, ...scopedGroups.flat()];
     } catch (error: any) {
       this.logger.error(
         { error: error.message },
@@ -767,66 +768,75 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
       );
       throw error;
     }
-
-    return packages;
   }
 
   /**
    * 执行批量同步
    */
   private async executeSyncAll(taskId: string, packageNames: string[]): Promise<void> {
-    this.updateSyncTask(taskId, {
-      status: 'running',
-      progress: 0,
-      current: 0,
-      total: packageNames.length
-    });
+    const uniquePackageNames = Array.from(new Set(packageNames));
+    const total = uniquePackageNames.length;
+    const syncConcurrency = this.getSyncConcurrency();
 
-    const results: SyncResult[] = [];
-
-    for (let i = 0; i < packageNames.length; i++) {
-      const packageName = packageNames[i];
-
+    try {
       this.updateSyncTask(taskId, {
-        current: i + 1,
-        currentPackage: packageName,
-        progress: Math.round(((i + 1) / packageNames.length) * 100)
+        status: 'running',
+        progress: 0,
+        current: 0,
+        total
       });
 
-      try {
-        // 使用自定义同步逻辑，通过 Verdaccio 存储 API 保存
-        const result = await this.syncPackageViaStorage(packageName);
-        results.push(result);
-      } catch (error: any) {
-        results.push({
-          success: false,
-          packageName,
-          versionsCount: 0,
-          distTags: {},
-          error: error.message
-        });
-      }
+      let completed = 0;
+      const results = await this.mapWithConcurrency(
+        uniquePackageNames,
+        syncConcurrency,
+        async (packageName) => {
+          this.updateSyncTask(taskId, {
+            currentPackage: packageName
+          });
 
-      // 添加小延迟，避免请求过快
-      if (i < packageNames.length - 1) {
-        await this.delay(200);
-      }
+          let result: SyncResult;
+          try {
+            // 使用自定义同步逻辑，通过 Verdaccio 存储 API 保存
+            result = await this.syncPackageViaStorage(packageName);
+          } catch (error: any) {
+            result = {
+              success: false,
+              packageName,
+              versionsCount: 0,
+              distTags: {},
+              error: error.message
+            };
+          }
+
+          completed++;
+          this.updateSyncTask(taskId, {
+            current: completed,
+            currentPackage: packageName,
+            progress: Math.round((completed / total) * 100)
+          });
+
+          return result;
+        }
+      );
+
+      const successCount = results.filter(r => r.success).length;
+      const failedCount = results.filter(r => !r.success).length;
+
+      this.updateSyncTask(taskId, {
+        status: 'completed',
+        progress: 100,
+        results,
+        currentPackage: undefined
+      });
+
+      this.logger.info(
+        { taskId, success: successCount, failed: failedCount },
+        '[Sync] Sync all completed: @{success} success, @{failed} failed'
+      );
+    } finally {
+      this.syncer.clearRemoteMetadataCache();
     }
-
-    const successCount = results.filter(r => r.success).length;
-    const failedCount = results.filter(r => !r.success).length;
-
-    this.updateSyncTask(taskId, {
-      status: 'completed',
-      progress: 100,
-      results,
-      currentPackage: undefined
-    });
-
-    this.logger.info(
-      { taskId, success: successCount, failed: failedCount },
-      '[Sync] Sync all completed: @{success} success, @{failed} failed'
-    );
   }
 
   /**
@@ -948,7 +958,38 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
     }
   }
 
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  private getSyncConcurrency(): number {
+    const configured = Number((this.config as HealerConfig).syncConcurrency);
+    if (!Number.isFinite(configured) || configured <= 0) {
+      return this.defaultSyncConcurrency;
+    }
+    return Math.max(1, Math.min(50, Math.floor(configured)));
+  }
+
+  private async mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    mapper: (item: T, index: number) => Promise<R>
+  ): Promise<R[]> {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const results = new Array<R>(items.length);
+    const workerCount = Math.max(1, Math.min(concurrency, items.length));
+    let nextIndex = 0;
+
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const currentIndex = nextIndex++;
+        if (currentIndex >= items.length) {
+          return;
+        }
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+      }
+    });
+
+    await Promise.all(workers);
+    return results;
   }
 }

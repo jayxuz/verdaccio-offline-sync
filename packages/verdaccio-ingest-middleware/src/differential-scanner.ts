@@ -1,5 +1,6 @@
 import { readdir, stat, readFile, writeFile, mkdir } from 'fs/promises';
 import path from 'path';
+import pLimit from 'p-limit';
 import { Logger } from '@verdaccio/types';
 import {
   ExportHistoryFile,
@@ -18,10 +19,12 @@ const EXPORTS_DIR = '.exports';
 export class DifferentialScanner {
   private storagePath: string;
   private logger: Logger;
+  private scanConcurrency: number;
 
-  constructor(storagePath: string, logger: Logger) {
+  constructor(storagePath: string, logger: Logger, scanConcurrency: number = 5) {
     this.storagePath = storagePath;
     this.logger = logger;
+    this.scanConcurrency = Math.max(1, Math.min(50, Math.floor(scanConcurrency)));
   }
 
   /**
@@ -63,56 +66,66 @@ export class DifferentialScanner {
     try {
       const entries = await readdir(absolutePath, { withFileTypes: true });
 
-      for (const entry of entries) {
-        const entryRelativePath = relativePath
-          ? path.join(relativePath, entry.name)
-          : entry.name;
-        const entryAbsolutePath = path.join(absolutePath, entry.name);
+      const limit = pLimit(this.scanConcurrency);
+      await Promise.all(
+        entries.map((entry) =>
+          limit(async () => {
+            const entryRelativePath = relativePath
+              ? path.join(relativePath, entry.name)
+              : entry.name;
+            const entryAbsolutePath = path.join(absolutePath, entry.name);
 
-        // 跳过隐藏文件和目录
-        if (entry.name.startsWith('.')) {
-          continue;
-        }
+            // 跳过隐藏文件和目录
+            if (entry.name.startsWith('.')) {
+              return;
+            }
 
-        if (entry.isDirectory()) {
-          // 递归扫描子目录（使用原始路径以匹配实际文件系统）
-          await this.scanDirectory(entryRelativePath, files, since, includeMetadata);
-        } else if (entry.isFile()) {
-          // 检查文件类型
-          const fileType = this.getFileType(entry.name);
-          if (!fileType) continue;
+            if (entry.isDirectory()) {
+              // 递归扫描子目录（使用原始路径以匹配实际文件系统）
+              await this.scanDirectory(entryRelativePath, files, since, includeMetadata);
+              return;
+            }
 
-          // 如果不包含元数据，跳过 package.json
-          if (!includeMetadata && fileType === 'metadata') continue;
+            if (!entry.isFile()) {
+              return;
+            }
 
-          // 获取文件信息
-          const fileStat = await stat(entryAbsolutePath);
+            // 检查文件类型
+            const fileType = this.getFileType(entry.name);
+            if (!fileType) return;
 
-          // 检查修改时间
-          if (since && fileStat.mtime <= since) continue;
+            // 如果不包含元数据，跳过 package.json
+            if (!includeMetadata && fileType === 'metadata') return;
 
-          // 规范化路径：将 %2f 解码为 /，确保 scoped 包使用嵌套目录结构
-          const normalizedRelativePath = this.normalizePackagePath(entryRelativePath);
+            // 获取文件信息
+            const fileStat = await stat(entryAbsolutePath);
 
-          // 解析包名和版本（使用规范化后的路径）
-          const packageName = this.extractPackageName(
-            this.normalizePackagePath(relativePath)
-          );
-          const version = fileType === 'tarball'
-            ? this.extractVersionFromFilename(packageName, entry.name)
-            : undefined;
+            // 检查修改时间
+            if (since && fileStat.mtime <= since) return;
 
-          files.push({
-            relativePath: normalizedRelativePath,
-            absolutePath: entryAbsolutePath,
-            size: fileStat.size,
-            mtime: fileStat.mtime,
-            type: fileType,
-            packageName,
-            version
-          });
-        }
-      }
+            // 规范化路径：将 %2f 解码为 /，确保 scoped 包使用嵌套目录结构
+            const normalizedRelativePath = this.normalizePackagePath(entryRelativePath);
+
+            // 解析包名和版本（使用规范化后的路径）
+            const packageName = this.extractPackageName(
+              this.normalizePackagePath(relativePath)
+            );
+            const version = fileType === 'tarball'
+              ? this.extractVersionFromFilename(packageName, entry.name)
+              : undefined;
+
+            files.push({
+              relativePath: normalizedRelativePath,
+              absolutePath: entryAbsolutePath,
+              size: fileStat.size,
+              mtime: fileStat.mtime,
+              type: fileType,
+              packageName,
+              version
+            });
+          })
+        )
+      );
     } catch (error: any) {
       this.logger.warn(
         { path: absolutePath, error: error.message },
