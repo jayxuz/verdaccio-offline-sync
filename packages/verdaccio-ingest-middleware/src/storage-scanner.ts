@@ -268,16 +268,8 @@ export class StorageScanner {
    * 检查特定版本是否存在
    */
   async hasVersion(packageName: string, version: string): Promise<boolean> {
-    const packagePath = this.getPackagePath(packageName);
-    const tarballName = this.getTarballName(packageName, version);
-    const tarballPath = path.join(packagePath, tarballName);
-
-    try {
-      await stat(tarballPath);
-      return true;
-    } catch {
-      return false;
-    }
+    const resolved = await this.resolveTarballPath(packageName, version);
+    return !!resolved;
   }
 
   /**
@@ -311,9 +303,16 @@ export class StorageScanner {
     packageName: string,
     version: string
   ): Promise<Version | null> {
-    const packagePath = this.getPackagePath(packageName);
-    const tarballName = this.getTarballName(packageName, version);
-    const tarballPath = path.join(packagePath, tarballName);
+    const resolved = await this.resolveTarballPath(packageName, version);
+    if (!resolved) {
+      this.logger.warn(
+        { packageName, version },
+        'Tarball file not found for @{packageName}@@{version}'
+      );
+      return null;
+    }
+
+    const { tarballName, tarballPath } = resolved;
 
     try {
       // 计算 shasum 和 integrity
@@ -364,6 +363,55 @@ export class StorageScanner {
       );
       return null;
     }
+  }
+
+  /**
+   * 解析 tarball 实际路径，兼容两种 scoped 包命名：
+   * 1) package-1.0.0.tgz
+   * 2) scope-package-1.0.0.tgz
+   */
+  private async resolveTarballPath(
+    packageName: string,
+    version: string
+  ): Promise<{ tarballName: string; tarballPath: string } | null> {
+    const packagePath = this.getPackagePath(packageName);
+    const candidates = this.getTarballNameCandidates(packageName, version);
+
+    for (const tarballName of candidates) {
+      const tarballPath = path.join(packagePath, tarballName);
+      try {
+        await stat(tarballPath);
+        return { tarballName, tarballPath };
+      } catch {
+        // 尝试下一候选
+      }
+    }
+
+    // 回退：遍历目录按版本匹配，兼容历史导入文件名
+    try {
+      const files = await readdir(packagePath);
+      const suffix = `-${version}.tgz`;
+      const matched = files.find((file) => file.endsWith(suffix));
+      if (matched) {
+        return {
+          tarballName: matched,
+          tarballPath: path.join(packagePath, matched)
+        };
+      }
+    } catch {
+      // 目录不存在或不可访问
+    }
+
+    return null;
+  }
+
+  private getTarballNameCandidates(packageName: string, version: string): string[] {
+    const scopedStyle = this.getTarballName(packageName, version);
+    const unscopedName = packageName.includes('/')
+      ? packageName.split('/').pop() || packageName.replace('@', '')
+      : packageName;
+    const unscopedStyle = `${unscopedName}-${version}.tgz`;
+    return Array.from(new Set([scopedStyle, unscopedStyle]));
   }
 
   /**

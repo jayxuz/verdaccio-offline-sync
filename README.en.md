@@ -37,6 +37,7 @@ English | [中文](./README.md)
 - **Sibling Version Completion** - Automatically downloads the latest patch within the same minor and the latest minor within the same major
 - **Local Path Import** - Import differential packages directly from server local paths
 - **Dependency Chain & Rebuild Hardening** - Fixes missing transitive dependency downloads and improves metadata persistence in `/ingest/sync` and `/ingest/rebuild-index`
+- **Scoped Tarball Filename Compatibility** - Supports both `package-x.y.z.tgz` and `scope-package-x.y.z.tgz` naming styles
 
 ## Plugin Components
 

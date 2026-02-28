@@ -1,5 +1,4 @@
 import { readdir } from 'fs/promises';
-import { basename } from 'path';
 import semver from 'semver';
 import { Logger, Manifest, Callback } from '@verdaccio/types';
 import { OfflineStorageConfig } from './types';
@@ -194,14 +193,18 @@ export class OfflinePackageStorage extends LocalFS {
         );
 
         const items = await readdir(this.path);
-        const localVersions = items
-          .filter((item: string) => item.endsWith('.tgz'))
-          .map((item: string) => {
-            // Extract version from filename: package-name-1.0.0.tgz -> 1.0.0
-            const baseName = basename(name);
-            return item.substring(baseName.length + 1, item.length - 4);
-          })
-          .filter((v: string) => semver.valid(v));
+        const tarballsByVersion = new Map<string, string[]>();
+        for (const item of items) {
+          if (!item.endsWith('.tgz')) continue;
+          const version = this.extractVersionFromTarballFilename(item);
+          if (!version) continue;
+
+          const filenames = tarballsByVersion.get(version) || [];
+          filenames.push(item);
+          tarballsByVersion.set(version, filenames);
+        }
+
+        const localVersions = Array.from(tarballsByVersion.keys());
 
         this.logger.debug(
           { packageName: name, count: localVersions.length },
@@ -228,8 +231,43 @@ export class OfflinePackageStorage extends LocalFS {
           '[verdaccio-offline-storage/readPackage] Removed @{count} unavailable versions for package: @{packageName}'
         );
 
+        // 对每个可用版本，校正 dist.tarball 文件名，兼容 scoped 包的两种命名：
+        // 1) package-1.0.0.tgz（旧格式）
+        // 2) scope-package-1.0.0.tgz（新格式）
+        const availableVersions = Object.keys(data.versions || {});
+        for (const version of availableVersions) {
+          const versionManifest: any = data.versions?.[version];
+          const localFilenames = [...(tarballsByVersion.get(version) || [])].sort();
+          if (!versionManifest || localFilenames.length === 0) continue;
+
+          const currentFilename = this.extractFilenameFromTarballUrl(
+            versionManifest?.dist?.tarball
+          );
+          const selectedFilename =
+            (currentFilename && localFilenames.includes(currentFilename) && currentFilename) ||
+            localFilenames[0];
+
+          if (!selectedFilename) continue;
+
+          if (!versionManifest.dist) {
+            versionManifest.dist = {};
+          }
+
+          if (currentFilename !== selectedFilename) {
+            versionManifest.dist.tarball = this.rewriteTarballUrl(
+              versionManifest.dist.tarball,
+              name,
+              selectedFilename
+            );
+
+            this.logger.debug(
+              { packageName: name, version, filename: selectedFilename },
+              '[verdaccio-offline-storage/readPackage] Rewrote tarball for @{packageName}@@{version} to @{filename}'
+            );
+          }
+        }
+
         // Update dist-tags.latest to the highest locally available version
-        const availableVersions = Object.keys(data.versions);
         if (availableVersions.length > 0) {
           const sortedVersions = availableVersions
             .filter((v) => semver.valid(v))
@@ -259,5 +297,52 @@ export class OfflinePackageStorage extends LocalFS {
         cb(readErr, data);
       }
     });
+  }
+
+  private extractVersionFromTarballFilename(filename: string): string | null {
+    const baseName = filename.replace('.tgz', '');
+    const versionMatch = baseName.match(
+      /-(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?(?:\+[a-zA-Z0-9.]+)?)$/
+    );
+
+    if (!versionMatch) {
+      return null;
+    }
+
+    const version = versionMatch[1];
+    return semver.valid(version) ? version : null;
+  }
+
+  private extractFilenameFromTarballUrl(tarball?: string): string | undefined {
+    if (!tarball || typeof tarball !== 'string') {
+      return undefined;
+    }
+
+    const decoded = tarball.split('?')[0].split('#')[0];
+    const segments = decoded.split('/');
+    const last = segments[segments.length - 1];
+    return last && last.endsWith('.tgz') ? last : undefined;
+  }
+
+  private rewriteTarballUrl(
+    existingTarball: string | undefined,
+    packageName: string,
+    filename: string
+  ): string {
+    if (!existingTarball || typeof existingTarball !== 'string') {
+      return `${packageName}/-/${filename}`;
+    }
+
+    const markerIndex = existingTarball.lastIndexOf('/-/');
+    if (markerIndex >= 0) {
+      return `${existingTarball.substring(0, markerIndex + 3)}${filename}`;
+    }
+
+    const slashIndex = existingTarball.lastIndexOf('/');
+    if (slashIndex >= 0) {
+      return `${existingTarball.substring(0, slashIndex + 1)}${filename}`;
+    }
+
+    return `${packageName}/-/${filename}`;
   }
 }

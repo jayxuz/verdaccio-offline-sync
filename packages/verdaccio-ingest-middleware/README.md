@@ -17,8 +17,9 @@ A Verdaccio middleware plugin for recursive package ingestion with multi-platfor
 - **Sibling Version Completion** (New): Automatically downloads the latest patch version within the same minor series and the latest minor version within the same major series for each cached version
 - **Async Task Management**: Long-running operations run in background with progress tracking
 - **Analysis-Confirm-Download Workflow**: Preview what will be downloaded before actually downloading
-- **Dependency Chain Completion** (v1.2.4): Analyze/sync starts from locally cached versions and recursively resolves transitive dependencies (for example `A -> B -> C`)
-- **Metadata Rebuild & Sync Hardening** (v1.2.4): `/sync` now persists metadata for newly downloaded packages, and `/rebuild-index` can create missing `package.json` and refresh local `dist-tags.latest`
+- **Dependency Chain Completion** (v1.2.5): Analyze/sync starts from locally cached versions and recursively resolves transitive dependencies (for example `A -> B -> C`)
+- **Scoped Tarball Filename Compatibility** (v1.2.5): `/rebuild-index` now supports both scoped tarball formats: `package-x.y.z.tgz` and `scope-package-x.y.z.tgz`
+- **Metadata Rebuild & Sync Hardening** (v1.2.5): `/sync` now persists metadata for newly downloaded packages, and `/rebuild-index` can create missing `package.json` and refresh local `dist-tags.latest`
 
 ## Installation
 

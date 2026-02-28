@@ -37,6 +37,7 @@
 - **同级版本补全** - 自动下载同 minor 最新 patch 和同 major 最新 minor 版本
 - **本地路径导入** - 支持从服务器本地路径直接导入差分包
 - **链式依赖与重建增强** - 修复链式依赖漏下载问题，增强 `/ingest/sync` 与 `/ingest/rebuild-index` 的元数据写回能力
+- **Scoped 包文件名兼容** - 同时兼容 `package-x.y.z.tgz` 与 `scope-package-x.y.z.tgz` 两种 tarball 命名
 
 ## 插件组成
 
