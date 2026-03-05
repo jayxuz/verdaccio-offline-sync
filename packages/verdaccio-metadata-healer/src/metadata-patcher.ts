@@ -35,6 +35,9 @@ export class MetadataPatcher {
     if (!patchedManifest._attachments) {
       patchedManifest._attachments = {};
     }
+    if (!(patchedManifest as any)._distfiles) {
+      (patchedManifest as any)._distfiles = {};
+    }
     if (!patchedManifest.time) {
       patchedManifest.time = {};
     }
@@ -63,6 +66,11 @@ export class MetadataPatcher {
           shasum,
           version: tarball.version
         } as any;
+
+        (patchedManifest as any)._distfiles[tarball.filename] = {
+          url: version.dist.tarball,
+          sha: shasum
+        };
 
         // 更新 time
         patchedManifest.time[tarball.version] = tarball.mtime.toISOString();

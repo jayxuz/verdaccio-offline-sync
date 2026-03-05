@@ -63,6 +63,9 @@ importers:
 
   packages/verdaccio-metadata-healer:
     dependencies:
+      express:
+        specifier: ^4.21.2
+        version: 4.21.2
       lru-cache:
         specifier: ^10.0.0
         version: 10.4.3
@@ -85,6 +88,9 @@ importers:
         specifier: '>=5.0.0'
         version: 6.2.4(encoding@0.1.13)(typanion@3.14.0)
     devDependencies:
+      '@types/express':
+        specifier: ^4.17.21
+        version: 4.17.25
       '@types/jsonwebtoken':
         specifier: ^9.0.0
         version: 9.0.10

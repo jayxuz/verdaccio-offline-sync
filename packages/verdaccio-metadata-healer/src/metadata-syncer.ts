@@ -142,6 +142,14 @@ export class MetadataSyncer {
       '[MetadataSyncer] Saving metadata for @{packageName} to @{path} with @{versions} versions, latest: @{latest}'
     );
 
+    const distfilesBackfilled = this.ensureDistfiles(metadata);
+    if (distfilesBackfilled > 0) {
+      this.logger.debug(
+        { packageName, distfilesBackfilled },
+        '[MetadataSyncer] Backfilled @{distfilesBackfilled} _distfiles entries for @{packageName}'
+      );
+    }
+
     await writeFile(metadataPath, JSON.stringify(metadata, null, 2));
 
     this.logger.info(
@@ -204,6 +212,7 @@ export class MetadataSyncer {
     remote: Manifest
   ): Manifest {
     if (!local) {
+      this.ensureDistfiles(remote);
       return remote;
     }
 
@@ -223,6 +232,14 @@ export class MetadataSyncer {
       };
     }
 
+    // 保留本地 _distfiles，避免覆盖后 tarball 回源失败
+    if ((local as any)._distfiles) {
+      (merged as any)._distfiles = {
+        ...((merged as any)._distfiles || {}),
+        ...((local as any)._distfiles || {})
+      };
+    }
+
     // 更新 _uplinks 的 fetched 时间
     if (!merged._uplinks) {
       merged._uplinks = {};
@@ -232,6 +249,8 @@ export class MetadataSyncer {
       fetched: Date.now()
     };
 
+    this.ensureDistfiles(merged);
+
     return merged;
   }
 
@@ -240,6 +259,65 @@ export class MetadataSyncer {
    */
   private getPackagePath(packageName: string): string {
     return join(this.storagePath, packageName);
+  }
+
+  private ensureDistfiles(metadata: Manifest): number {
+    const raw = metadata as any;
+    if (!raw.versions || typeof raw.versions !== 'object') {
+      return 0;
+    }
+    if (!raw._distfiles || typeof raw._distfiles !== 'object') {
+      raw._distfiles = {};
+    }
+
+    const distfiles = raw._distfiles as Record<string, any>;
+    let backfilled = 0;
+
+    for (const versionMeta of Object.values(raw.versions as Record<string, any>)) {
+      const tarball = versionMeta?.dist?.tarball;
+      if (typeof tarball !== 'string' || tarball.length === 0) {
+        continue;
+      }
+
+      const filename = this.extractFilenameFromTarballUrl(tarball);
+      if (!filename) {
+        continue;
+      }
+
+      const shasum = versionMeta?.dist?.shasum;
+      const current = distfiles[filename];
+      if (!current || typeof current !== 'object') {
+        distfiles[filename] = {
+          url: tarball,
+          ...(typeof shasum === 'string' && shasum.length > 0 ? { sha: shasum } : {})
+        };
+        backfilled++;
+        continue;
+      }
+
+      if (typeof current.url !== 'string' || current.url.length === 0) {
+        current.url = tarball;
+      }
+      if (
+        (typeof current.sha !== 'string' || current.sha.length === 0) &&
+        typeof shasum === 'string' &&
+        shasum.length > 0
+      ) {
+        current.sha = shasum;
+      }
+    }
+
+    return backfilled;
+  }
+
+  private extractFilenameFromTarballUrl(tarball: string): string | null {
+    const clean = tarball.split('?')[0].split('#')[0];
+    const lastSlash = clean.lastIndexOf('/');
+    const filename = lastSlash >= 0 ? clean.substring(lastSlash + 1) : clean;
+    if (!filename || !filename.endsWith('.tgz')) {
+      return null;
+    }
+    return filename;
   }
 
   /**

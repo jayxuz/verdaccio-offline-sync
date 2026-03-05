@@ -272,6 +272,52 @@ export class OfflinePackageStorage extends LocalFS {
           }
         }
 
+        // Verdaccio tarball 回源依赖 _distfiles。历史导入数据可能只包含 versions[*].dist.tarball，
+        // 导致本地 miss 后无法根据 _distfiles 回源。这里按当前 manifest 做一次运行时回填兜底。
+        const distfiles = this.ensureDistfilesMap(data);
+        let distfilesBackfilled = 0;
+        for (const version of versionsToProcess) {
+          const versionManifest: any = data.versions?.[version];
+          const tarballUrl = versionManifest?.dist?.tarball;
+          const shasum = versionManifest?.dist?.shasum;
+
+          if (typeof tarballUrl !== 'string' || tarballUrl.length === 0) {
+            continue;
+          }
+
+          const manifestFilename = this.extractFilenameFromTarballUrl(tarballUrl);
+          if (manifestFilename) {
+            if (!distfiles[manifestFilename]) {
+              distfilesBackfilled++;
+            }
+            distfiles[manifestFilename] = this.createDistfileRecord(
+              distfiles[manifestFilename],
+              tarballUrl,
+              shasum
+            );
+          }
+
+          // 为本地已存在的同版本 tarball 建立别名，兼容旧/新命名格式混用。
+          const localFilenames = tarballsByVersion.get(version) || [];
+          for (const localFilename of localFilenames) {
+            if (!distfiles[localFilename]) {
+              distfilesBackfilled++;
+            }
+            distfiles[localFilename] = this.createDistfileRecord(
+              distfiles[localFilename],
+              this.rewriteTarballUrl(tarballUrl, name, localFilename),
+              shasum
+            );
+          }
+        }
+
+        if (distfilesBackfilled > 0) {
+          this.logger.debug(
+            { packageName: name, count: distfilesBackfilled },
+            '[verdaccio-offline-storage/readPackage] Backfilled @{count} _distfiles entries for @{packageName}'
+          );
+        }
+
         // 离线模式下，将 dist-tags.latest 对齐到本地可用的最高版本
         if (offline && versionsToProcess.length > 0) {
           const sortedVersions = versionsToProcess
@@ -366,6 +412,30 @@ export class OfflinePackageStorage extends LocalFS {
     }
 
     return `${packageName}/-/${filename}`;
+  }
+
+  private ensureDistfilesMap(manifest: Manifest): Record<string, any> {
+    const raw = manifest as any;
+    if (!raw._distfiles || typeof raw._distfiles !== 'object') {
+      raw._distfiles = {};
+    }
+    return raw._distfiles as Record<string, any>;
+  }
+
+  private createDistfileRecord(
+    existing: any,
+    url: string,
+    shasum?: string
+  ): Record<string, any> {
+    const record: Record<string, any> =
+      existing && typeof existing === 'object' ? { ...existing } : {};
+
+    record.url = url;
+    if (!record.sha && typeof shasum === 'string' && shasum.length > 0) {
+      record.sha = shasum;
+    }
+
+    return record;
   }
 
   private resolveTarballNameForRead(requestedTarballName: string): string {

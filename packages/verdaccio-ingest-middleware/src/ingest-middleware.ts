@@ -833,7 +833,15 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         limit(async () => {
           try {
             const packument = await this.downloader.downloadPackument(packageName);
+            const backfilled = this.ensureDistfilesFromVersions(packument);
             await this.downloader.savePackument(packageName, packument);
+
+            if (backfilled > 0) {
+              this.logger.debug(
+                { packageName, count: backfilled },
+                'Backfilled @{count} _distfiles entries for @{packageName}'
+              );
+            }
           } catch (error: any) {
             this.logger.warn(
               { name: packageName, error: error.message },
@@ -848,6 +856,69 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         })
       )
     );
+  }
+
+  private ensureDistfilesFromVersions(packument: any): number {
+    if (!packument || typeof packument !== 'object') {
+      return 0;
+    }
+
+    if (!packument.versions || typeof packument.versions !== 'object') {
+      return 0;
+    }
+
+    if (!packument._distfiles || typeof packument._distfiles !== 'object') {
+      packument._distfiles = {};
+    }
+
+    const distfiles = packument._distfiles as Record<string, any>;
+    let backfilled = 0;
+
+    for (const versionMeta of Object.values(packument.versions as Record<string, any>)) {
+      const tarball = versionMeta?.dist?.tarball;
+      if (typeof tarball !== 'string' || tarball.length === 0) {
+        continue;
+      }
+
+      const filename = this.extractFilenameFromTarballUrl(tarball);
+      if (!filename) {
+        continue;
+      }
+
+      const shasum = versionMeta?.dist?.shasum;
+      const current = distfiles[filename];
+      if (!current || typeof current !== 'object') {
+        distfiles[filename] = {
+          url: tarball,
+          ...(typeof shasum === 'string' && shasum.length > 0 ? { sha: shasum } : {})
+        };
+        backfilled++;
+        continue;
+      }
+
+      if (typeof current.url !== 'string' || current.url.length === 0) {
+        current.url = tarball;
+      }
+      if (
+        (typeof current.sha !== 'string' || current.sha.length === 0) &&
+        typeof shasum === 'string' &&
+        shasum.length > 0
+      ) {
+        current.sha = shasum;
+      }
+    }
+
+    return backfilled;
+  }
+
+  private extractFilenameFromTarballUrl(tarball: string): string | null {
+    const clean = tarball.split('?')[0].split('#')[0];
+    const lastSlash = clean.lastIndexOf('/');
+    const filename = lastSlash >= 0 ? clean.substring(lastSlash + 1) : clean;
+    if (!filename || !filename.endsWith('.tgz')) {
+      return null;
+    }
+    return filename;
   }
 
   /**
@@ -972,6 +1043,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       let healed = 0;
       let tagsUpdated = 0;
       let created = 0;
+      let distfilesBackfilled = 0;
 
       // 2. 对每个包重建元数据
       for (const pkg of packages) {
@@ -1031,6 +1103,12 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
             changed = true;
           }
 
+          const backfilled = this.ensureDistfilesFromVersions(packument);
+          if (backfilled > 0) {
+            distfilesBackfilled += backfilled;
+            changed = true;
+          }
+
           if (changed) {
             packument.time = packument.time || {};
             packument.time.modified = new Date().toISOString();
@@ -1048,8 +1126,8 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       }
 
       this.logger.info(
-        { scanned: packages.length, healed, tagsUpdated, created },
-        'Index rebuild completed: scanned @{scanned}, healed @{healed}, tags updated @{tagsUpdated}, created @{created}'
+        { scanned: packages.length, healed, tagsUpdated, created, distfilesBackfilled },
+        'Index rebuild completed: scanned @{scanned}, healed @{healed}, tags updated @{tagsUpdated}, created @{created}, distfiles backfilled @{distfilesBackfilled}'
       );
 
       res.json({
@@ -1057,7 +1135,8 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         scanned: packages.length,
         healed,
         tagsUpdated,
-        created
+        created,
+        distfilesBackfilled
       });
     } catch (error: any) {
       this.logger.error({ error: error.message }, 'Index rebuild failed: @{error}');
