@@ -1,4 +1,6 @@
+import { existsSync, readdirSync } from 'fs';
 import { readdir } from 'fs/promises';
+import { basename, dirname, join } from 'path';
 import semver from 'semver';
 import { Logger, Manifest, Callback } from '@verdaccio/types';
 import { OfflineStorageConfig } from './types';
@@ -166,18 +168,10 @@ export class OfflinePackageStorage extends LocalFS {
       '[verdaccio-offline-storage/readPackage] Package @{packageName} mode check: offline=@{offline}, hasProxy=@{hasProxy}, configOffline=@{configOffline}, hasGetMatchedPackagesSpec=@{hasGetMatchedPackagesSpec}'
     );
 
-    if (!offline) {
-      this.logger.debug(
-        { packageName: name },
-        '[verdaccio-offline-storage/readPackage] Resolving package @{packageName} in online mode'
-      );
-      super.readPackage(name, cb);
-      return;
-    }
-
+    const resolveMode = offline ? 'offline' : 'online';
     this.logger.debug(
-      { packageName: name },
-      '[verdaccio-offline-storage/readPackage] Resolving package @{packageName} in offline mode'
+      { packageName: name, offline },
+      `[verdaccio-offline-storage/readPackage] Resolving package @{packageName} in ${resolveMode} mode`
     );
 
     super.readPackage(name, async (err: any, data: Manifest) => {
@@ -212,30 +206,32 @@ export class OfflinePackageStorage extends LocalFS {
         );
 
         const allVersions = Object.keys(data.versions || {});
-        const originalVersionCount = allVersions.length;
+        if (offline) {
+          const originalVersionCount = allVersions.length;
 
-        // Remove versions that are not locally available
-        for (const version of allVersions) {
-          if (!localVersions.includes(version)) {
-            delete data.versions[version];
-            this.logger.trace(
-              { packageName: name, version },
-              '[verdaccio-offline-storage/readPackage] Removed @{packageName}@@{version}'
-            );
+          // 离线模式下仅保留本地已有 tarball 的版本
+          for (const version of allVersions) {
+            if (!localVersions.includes(version)) {
+              delete data.versions[version];
+              this.logger.trace(
+                { packageName: name, version },
+                '[verdaccio-offline-storage/readPackage] Removed @{packageName}@@{version}'
+              );
+            }
           }
-        }
 
-        const removedCount = originalVersionCount - Object.keys(data.versions).length;
-        this.logger.debug(
-          { packageName: name, count: removedCount },
-          '[verdaccio-offline-storage/readPackage] Removed @{count} unavailable versions for package: @{packageName}'
-        );
+          const removedCount = originalVersionCount - Object.keys(data.versions).length;
+          this.logger.debug(
+            { packageName: name, count: removedCount },
+            '[verdaccio-offline-storage/readPackage] Removed @{count} unavailable versions for package: @{packageName}'
+          );
+        }
 
         // 对每个可用版本，校正 dist.tarball 文件名，兼容 scoped 包的两种命名：
         // 1) package-1.0.0.tgz（旧格式）
         // 2) scope-package-1.0.0.tgz（新格式）
-        const availableVersions = Object.keys(data.versions || {});
-        for (const version of availableVersions) {
+        const versionsToProcess = Object.keys(data.versions || {});
+        for (const version of versionsToProcess) {
           const versionManifest: any = data.versions?.[version];
           const localFilenames = [...(tarballsByVersion.get(version) || [])].sort();
           if (!versionManifest || localFilenames.length === 0) continue;
@@ -267,9 +263,9 @@ export class OfflinePackageStorage extends LocalFS {
           }
         }
 
-        // Update dist-tags.latest to the highest locally available version
-        if (availableVersions.length > 0) {
-          const sortedVersions = availableVersions
+        // 离线模式下，将 dist-tags.latest 对齐到本地可用的最高版本
+        if (offline && versionsToProcess.length > 0) {
+          const sortedVersions = versionsToProcess
             .filter((v) => semver.valid(v))
             .sort((a, b) => semver.compare(b, a));
 
@@ -297,6 +293,23 @@ export class OfflinePackageStorage extends LocalFS {
         cb(readErr, data);
       }
     });
+  }
+
+  /**
+   * 读取 tarball 时兼容两种 scoped 包命名格式：
+   * 1) package-x.y.z.tgz
+   * 2) scope-package-x.y.z.tgz
+   */
+  readTarball(name: string): any {
+    const resolvedTarballName = this.resolveTarballNameForRead(name);
+    if (resolvedTarballName !== name) {
+      this.logger.debug(
+        { requested: name, resolved: resolvedTarballName },
+        '[verdaccio-offline-storage/readTarball] Remapped tarball @{requested} -> @{resolved}'
+      );
+    }
+
+    return super.readTarball(resolvedTarballName);
   }
 
   private extractVersionFromTarballFilename(filename: string): string | null {
@@ -344,5 +357,52 @@ export class OfflinePackageStorage extends LocalFS {
     }
 
     return `${packageName}/-/${filename}`;
+  }
+
+  private resolveTarballNameForRead(requestedTarballName: string): string {
+    const requestedPath = join(this.path, requestedTarballName);
+    if (existsSync(requestedPath)) {
+      return requestedTarballName;
+    }
+
+    const version = this.extractVersionFromTarballFilename(requestedTarballName);
+    if (!version) {
+      return requestedTarballName;
+    }
+
+    // 先按当前包目录推导最可能的命名
+    for (const candidate of this.getScopedTarballNameCandidates(version)) {
+      if (existsSync(join(this.path, candidate))) {
+        return candidate;
+      }
+    }
+
+    // 回退：目录里找任意同版本 tarball
+    try {
+      const files = readdirSync(this.path)
+        .filter((file) => file.endsWith('.tgz'))
+        .filter((file) => this.extractVersionFromTarballFilename(file) === version)
+        .sort();
+
+      if (files.length > 0) {
+        return files[0];
+      }
+    } catch {
+      // 忽略目录读取错误，继续使用原始名称
+    }
+
+    return requestedTarballName;
+  }
+
+  private getScopedTarballNameCandidates(version: string): string[] {
+    const packageBase = basename(this.path);
+    const scopeBase = basename(dirname(this.path));
+
+    const candidates = [`${packageBase}-${version}.tgz`];
+    if (scopeBase.startsWith('@')) {
+      candidates.push(`${scopeBase.substring(1)}-${packageBase}-${version}.tgz`);
+    }
+
+    return Array.from(new Set(candidates));
   }
 }
