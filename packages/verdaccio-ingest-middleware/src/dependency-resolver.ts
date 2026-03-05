@@ -35,6 +35,8 @@ export class DependencyResolver {
   private packumentCache: Map<string, any> = new Map();
   // 正在进行中的 packument 请求（避免并发场景下重复请求同一包）
   private packumentInflight: Map<string, Promise<any | null>> = new Map();
+  // 记录当前分析中已尝试过远程同步的包，避免同一个包反复请求
+  private remotePackumentAttempted: Set<string> = new Set();
   // 并发控制
   private concurrencyLimit: ReturnType<typeof pLimit>;
 
@@ -43,6 +45,24 @@ export class DependencyResolver {
     this.logger = logger;
     this.registry = config.upstreamRegistry || 'https://registry.npmjs.org';
     this.concurrencyLimit = pLimit(config.concurrency || 5);
+  }
+
+  /**
+   * 注入本地 packument 到缓存（用于本地优先分析）
+   */
+  seedPackument(packageName: string, packument: any): void {
+    if (!packageName || !packument || typeof packument !== 'object') {
+      return;
+    }
+    const trimmed = this.trimPackument(packument);
+    this.packumentCache.set(packageName, trimmed);
+  }
+
+  /**
+   * 获取缓存中的 packument（用于后续定向保存元数据）
+   */
+  getCachedPackument(packageName: string): any | null {
+    return this.packumentCache.get(packageName) || null;
   }
 
   /**
@@ -378,30 +398,53 @@ export class DependencyResolver {
     name: string,
     range: string
   ): Promise<string | null> {
-    const packument = this.packumentCache.get(name);
+    let packument = this.packumentCache.get(name);
     if (!packument) {
-      // 尝试获取
-      const fetched = await this.getPackument(name);
-      if (!fetched) return null;
+      // 首次按常规路径获取（可能是远程，也可能已由调用方 seed）
+      packument = await this.getPackument(name);
+      if (!packument) {
+        return null;
+      }
     }
 
-    const cached = this.packumentCache.get(name);
-    if (!cached?.versions) return null;
+    const localMatch = this.resolveVersionFromPackument(packument, range);
+    if (localMatch) {
+      return localMatch;
+    }
+
+    // 本地/已有缓存无法满足时，再定向拉取该包远程元数据重试一次
+    if (!this.remotePackumentAttempted.has(name)) {
+      const remotePackument = await this.syncPackumentFromRemote(name);
+      const remoteMatch = this.resolveVersionFromPackument(remotePackument, range);
+      if (remoteMatch) {
+        return remoteMatch;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 从 packument 中解析版本（支持具体版本、dist-tag、semver range）
+   */
+  private resolveVersionFromPackument(packument: any, range: string): string | null {
+    if (!packument?.versions) {
+      return null;
+    }
 
     // 如果 range 是具体版本
-    if (cached.versions[range]) {
+    if (packument.versions[range]) {
       return range;
     }
 
     // 如果 range 是 dist-tag
-    if (cached['dist-tags']?.[range]) {
-      return cached['dist-tags'][range];
+    if (packument['dist-tags']?.[range]) {
+      return packument['dist-tags'][range];
     }
 
     // 解析版本范围
-    const versions = Object.keys(cached.versions);
-    const matched = semver.maxSatisfying(versions, range);
-    return matched;
+    const versions = Object.keys(packument.versions);
+    return semver.maxSatisfying(versions, range);
   }
 
   /**
@@ -468,6 +511,7 @@ export class DependencyResolver {
 
     const request = (async () => {
       try {
+        this.remotePackumentAttempted.add(name);
         const packument = await pacote.packument(name, {
           registry: this.registry,
           fullMetadata: true
@@ -488,6 +532,41 @@ export class DependencyResolver {
     })();
 
     this.packumentInflight.set(name, request);
+    return request;
+  }
+
+  /**
+   * 强制从上游同步指定包的 packument（用于本地缓存无法满足版本范围时）
+   */
+  private async syncPackumentFromRemote(name: string): Promise<any | null> {
+    const inflightKey = `remote:${name}`;
+    const inflight = this.packumentInflight.get(inflightKey);
+    if (inflight) {
+      return inflight;
+    }
+
+    const request = (async () => {
+      this.remotePackumentAttempted.add(name);
+      try {
+        const packument = await pacote.packument(name, {
+          registry: this.registry,
+          fullMetadata: true
+        });
+        const trimmed = this.trimPackument(packument);
+        this.packumentCache.set(name, trimmed);
+        return trimmed;
+      } catch (error: any) {
+        this.logger.warn(
+          { name, error: error.message },
+          'Failed to sync remote packument for @{name}: @{error}'
+        );
+        return null;
+      } finally {
+        this.packumentInflight.delete(inflightKey);
+      }
+    })();
+
+    this.packumentInflight.set(inflightKey, request);
     return request;
   }
 
@@ -688,5 +767,6 @@ export class DependencyResolver {
   clearCache(): void {
     this.packumentCache.clear();
     this.packumentInflight.clear();
+    this.remotePackumentAttempted.clear();
   }
 }

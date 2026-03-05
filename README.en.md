@@ -160,8 +160,9 @@ middlewares:
       - os: win32
         arch: arm64
     sync:
+      refreshAllMetadataBeforeAnalyze: false
       updateToLatest: false
-      completeSiblingVersions: true
+      completeSiblingVersions: false
       includeDev: false
       includePeer: true
       includeOptional: true
@@ -233,6 +234,7 @@ Displays current local cache statistics:
 **Sync Options:**
 | Option | Description |
 |--------|-------------|
+| Refresh All Metadata Before Analyze | Refresh metadata of all cached packages from upstream (disabled by default) |
 | Update to Latest | Check for newer versions of cached packages |
 | Complete Sibling Versions | For each cached version, download the latest patch in the same minor and the latest minor in the same major |
 | Include Optional Dependencies | Download optionalDependencies (platform binaries) |
@@ -257,9 +259,10 @@ Displays current local cache statistics:
 | Phase | Progress Range | Description |
 |-------|----------------|-------------|
 | Scan Local Cache | 0-5% | Scan storage directory |
-| Refresh Metadata | 5-30% | Fetch latest version info from upstream |
-| Analyze Dependencies | 30-80% | BFS traverse dependency tree |
-| Detect Platform Binaries | 80-95% | Identify platform packages to download |
+| Prepare Metadata | 5-25% | Load local metadata first; refresh upstream only when update/sibling completion is enabled |
+| Analyze Dependencies | 25-75% | BFS traverse dependency tree |
+| Targeted Metadata Sync | 75-85% | Sync metadata only for dependency gaps |
+| Detect Platform Binaries | 85-95% | Identify platform packages to download |
 | Complete | 100% | Generate download list |
 
 #### 5. Execution Log
@@ -581,8 +584,9 @@ Automatically detects and downloads platform-specific packages:
 | `concurrency` | number | 5 | Processing concurrency (download/scan/analyze/export) |
 | `timeout` | number | 60000 | Request timeout (ms) |
 | `platforms` | array | - | Target platform list |
+| `sync.refreshAllMetadataBeforeAnalyze` | boolean | false | Whether to refresh all metadata before analysis |
 | `sync.updateToLatest` | boolean | false | Update to latest versions |
-| `sync.completeSiblingVersions` | boolean | true | Complete sibling versions (latest patch in same minor + latest minor in same major) |
+| `sync.completeSiblingVersions` | boolean | false | Complete sibling versions (latest patch in same minor + latest minor in same major) |
 | `sync.includeDev` | boolean | false | Include devDependencies |
 | `sync.includePeer` | boolean | true | Include peerDependencies |
 | `sync.includeOptional` | boolean | true | Include optionalDependencies |

@@ -50,8 +50,9 @@ middlewares:
         arch: arm64
     # Sync options
     sync:
+      refreshAllMetadataBeforeAnalyze: false
       updateToLatest: false
-      completeSiblingVersions: true
+      completeSiblingVersions: false
       includeDev: false
       includePeer: true
       includeOptional: true
@@ -76,7 +77,7 @@ All endpoints are prefixed with `/_/ingest/`.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/refresh` | Refresh metadata for cached packages |
-| POST | `/sync` | Full sync: refresh + download missing deps |
+| POST | `/sync` | One-click sync: analyze + download missing deps (optional full refresh before analyze) |
 | POST | `/rebuild-index` | Rebuild local metadata index |
 
 ### Platform Binaries

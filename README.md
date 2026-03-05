@@ -161,8 +161,9 @@ middlewares:
       - os: win32
         arch: arm64
     sync:
+      refreshAllMetadataBeforeAnalyze: false
       updateToLatest: false
-      completeSiblingVersions: true
+      completeSiblingVersions: false
       includeDev: false
       includePeer: true
       includeOptional: true
@@ -234,6 +235,7 @@ middlewares:
 **同步选项：**
 | 选项 | 说明 |
 |------|------|
+| 分析前全量刷新元数据 | 从上游刷新所有本地缓存包元数据（默认关闭） |
 | 更新到最新版本 | 检查已缓存包是否有更新版本 |
 | 补全同级版本 | 对每个已缓存版本，下载同 minor 最新 patch 和同 major 最新 minor |
 | 包含可选依赖 | 下载 optionalDependencies（平台二进制包） |
@@ -258,9 +260,10 @@ middlewares:
 | 阶段 | 进度范围 | 说明 |
 |------|----------|------|
 | 扫描本地缓存 | 0-5% | 扫描 storage 目录 |
-| 刷新元数据 | 5-30% | 从上游获取最新版本信息 |
-| 分析依赖关系 | 30-80% | BFS 遍历依赖树 |
-| 检测平台二进制包 | 80-95% | 识别需要下载的平台包 |
+| 准备元数据 | 5-25% | 默认加载本地元数据，仅在启用升级/同级补全时刷新上游 |
+| 分析依赖关系 | 25-75% | BFS 遍历依赖树 |
+| 定向更新元数据 | 75-85% | 仅同步缺口依赖的元数据 |
+| 检测平台二进制包 | 85-95% | 识别需要下载的平台包 |
 | 完成 | 100% | 生成下载列表 |
 
 #### 5. 执行日志
@@ -582,8 +585,9 @@ curl -X POST http://external:4873/_/ingest/sync \
 | `concurrency` | number | 5 | 并发处理数（下载/扫描/分析/导出链路） |
 | `timeout` | number | 60000 | 请求超时（毫秒） |
 | `platforms` | array | - | 目标平台列表 |
+| `sync.refreshAllMetadataBeforeAnalyze` | boolean | false | 分析前是否全量刷新元数据 |
 | `sync.updateToLatest` | boolean | false | 是否更新到最新版本 |
-| `sync.completeSiblingVersions` | boolean | true | 是否补全同级版本（同 minor 最新 patch + 同 major 最新 minor） |
+| `sync.completeSiblingVersions` | boolean | false | 是否补全同级版本（同 minor 最新 patch + 同 major 最新 minor） |
 | `sync.includeDev` | boolean | false | 是否包含 devDependencies |
 | `sync.includePeer` | boolean | true | 是否包含 peerDependencies |
 | `sync.includeOptional` | boolean | true | 是否包含 optionalDependencies |

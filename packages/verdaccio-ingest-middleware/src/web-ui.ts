@@ -723,6 +723,10 @@ export function getWebUIHTML(config: any): string {
         <div class="form-group">
           <label>同步选项</label>
           <div class="option-row">
+            <label><input type="checkbox" id="refreshAllMetadataBeforeAnalyze"><span>分析前全量刷新元数据</span></label>
+            <button class="help-btn" type="button">?<span class="tooltip">默认关闭。开启后会先从上游刷新所有本地缓存包的元数据，可能耗时较长并显著增加元数据体积</span></button>
+          </div>
+          <div class="option-row">
             <label><input type="checkbox" id="updateToLatest"><span>更新到最新版本</span></label>
             <button class="help-btn" type="button">?<span class="tooltip">检查已缓存包是否有更新版本，如有则下载最新版本到本地缓存</span></button>
           </div>
@@ -735,7 +739,7 @@ export function getWebUIHTML(config: any): string {
             <button class="help-btn" type="button">?<span class="tooltip">下载 peerDependencies 中声明的包，这些是运行时需要的依赖</span></button>
           </div>
           <div class="option-row">
-            <label><input type="checkbox" id="completeSiblingVersions" checked><span>补全同级版本</span></label>
+            <label><input type="checkbox" id="completeSiblingVersions"><span>补全同级版本</span></label>
             <button class="help-btn" type="button">?<span class="tooltip">对每个已缓存的版本，自动下载同 minor 系列的最新 patch 版本和同 major 系列的最新 minor 版本。例如本地有 6.3.2，则补全 6.3.x 最新和 6.x.x 最新</span></button>
           </div>
         </div>
@@ -1303,7 +1307,7 @@ export function getWebUIHTML(config: any): string {
     // 阶段名称映射
     const phaseLabels = {
       'scanning': '扫描本地缓存',
-      'refreshing': '刷新元数据',
+      'refreshing': '准备元数据',
       'analyzing': '分析依赖关系',
       'detecting-binaries': '检测平台二进制包',
       'completed': '分析完成'
@@ -1335,11 +1339,17 @@ export function getWebUIHTML(config: any): string {
       }
 
       const options = {
+        refreshAllMetadataBeforeAnalyze: document.getElementById('refreshAllMetadataBeforeAnalyze').checked,
         updateToLatest: document.getElementById('updateToLatest').checked,
         includeOptional: document.getElementById('includeOptional').checked,
         includePeer: document.getElementById('includePeer').checked,
         completeSiblingVersions: document.getElementById('completeSiblingVersions').checked
       };
+
+      if (!options.refreshAllMetadataBeforeAnalyze &&
+          (options.updateToLatest || options.completeSiblingVersions)) {
+        addLog('未开启“分析前全量刷新元数据”，升级/同级补全将仅基于本地元数据判断', 'warning');
+      }
 
       try {
         document.getElementById('analyzeBtn').disabled = true;
@@ -1601,11 +1611,17 @@ export function getWebUIHTML(config: any): string {
       }
 
       const options = {
+        refreshAllMetadataBeforeAnalyze: document.getElementById('refreshAllMetadataBeforeAnalyze').checked,
         updateToLatest: document.getElementById('updateToLatest').checked,
         includeOptional: document.getElementById('includeOptional').checked,
         includePeer: document.getElementById('includePeer').checked,
         completeSiblingVersions: document.getElementById('completeSiblingVersions').checked
       };
+
+      if (!options.refreshAllMetadataBeforeAnalyze &&
+          (options.updateToLatest || options.completeSiblingVersions)) {
+        addLog('未开启“分析前全量刷新元数据”，升级/同级补全将仅基于本地元数据判断', 'warning');
+      }
 
       try {
         addLog('正在启动同步任务...', 'info');

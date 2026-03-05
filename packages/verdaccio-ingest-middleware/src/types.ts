@@ -25,6 +25,7 @@ export interface IngestConfig {
  * 同步选项
  */
 export interface SyncOptions {
+  refreshAllMetadataBeforeAnalyze?: boolean;
   updateToLatest?: boolean;
   completeSiblingVersions?: boolean;
   includeDev?: boolean;

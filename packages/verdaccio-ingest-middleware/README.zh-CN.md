@@ -50,8 +50,9 @@ middlewares:
         arch: arm64
     # 同步选项
     sync:
+      refreshAllMetadataBeforeAnalyze: false
       updateToLatest: false
-      completeSiblingVersions: true
+      completeSiblingVersions: false
       includeDev: false
       includePeer: true
       includeOptional: true
@@ -76,7 +77,7 @@ middlewares:
 | 方法 | 端点 | 描述 |
 |------|------|------|
 | POST | `/refresh` | 刷新已缓存包的元数据 |
-| POST | `/sync` | 完整同步：刷新 + 下载缺失依赖 |
+| POST | `/sync` | 一键同步：分析 + 下载缺失依赖（可选分析前全量刷新） |
 | POST | `/rebuild-index` | 重建本地元数据索引 |
 
 ### 平台二进制文件

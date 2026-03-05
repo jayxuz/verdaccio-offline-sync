@@ -17,6 +17,8 @@ import {
   SyncResult,
   CacheStatus,
   TaskStatus,
+  CachedPackage,
+  RefreshedMetadata,
   ResolvedPackage,
   PLATFORM_PRESETS,
   AnalysisResult,
@@ -200,8 +202,9 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
     // 合并选项
     const syncOptions = {
+      refreshAllMetadataBeforeAnalyze: false,
       updateToLatest: false,
-      completeSiblingVersions: true,
+      completeSiblingVersions: false,
       includeDev: false,
       includePeer: true,
       includeOptional: true,
@@ -244,16 +247,24 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       const cachedPackages = await this.scanner.scanAllPackages();
       this.updateTask(taskId, { progress: 10 });
 
-      // 2. 刷新所有缓存包的元数据
-      this.updateTask(taskId, { message: 'Refreshing metadata...' });
-      const refreshedMetadata = await this.resolver.refreshMetadata(cachedPackages);
+      // 2. 元数据准备：默认本地优先，按开关决定是否全量刷新
+      const requiresGlobalMetadataRefresh = Boolean(options.refreshAllMetadataBeforeAnalyze);
+
+      let analysisMetadata: RefreshedMetadata[] = [];
+      if (requiresGlobalMetadataRefresh) {
+        this.updateTask(taskId, { message: 'Refreshing metadata...' });
+        analysisMetadata = await this.resolver.refreshMetadata(cachedPackages);
+      } else {
+        this.updateTask(taskId, { message: 'Preparing local metadata...' });
+        analysisMetadata = await this.prepareLocalMetadataForAnalysis(cachedPackages);
+      }
       this.updateTask(taskId, { progress: 30 });
 
       // 3. 分析依赖关系，找出缺失的包
       this.updateTask(taskId, { message: 'Analyzing dependencies...' });
       const missingPackages = await this.resolver.analyzeMissingDependencies(
         cachedPackages,
-        refreshedMetadata,
+        analysisMetadata,
         options
       );
       this.updateTask(taskId, { progress: 50 });
@@ -317,11 +328,10 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
       // 6. 保存元数据
       this.updateTask(taskId, { message: 'Saving metadata...' });
-      const metadataTargets = [
-        ...refreshedMetadata.map((meta) => meta.name),
-        ...Array.from(downloadedPackageNames)
-      ];
-      await this.savePackumentsForPackages(
+      const metadataTargets = requiresGlobalMetadataRefresh
+        ? [...analysisMetadata.map((meta) => meta.name), ...Array.from(downloadedPackageNames)]
+        : Array.from(downloadedPackageNames);
+      const refreshedCount = await this.savePackumentsForPackages(
         metadataTargets,
         (completed, total, packageName) => {
           this.updateTask(taskId, {
@@ -334,7 +344,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       const result: SyncResult = {
         success: true,
         scanned: cachedPackages.length,
-        refreshed: refreshedMetadata.length,
+        refreshed: refreshedCount,
         downloaded: downloadResults.length,
         platforms: platforms.map((p) => `${p.os}-${p.arch}`)
       };
@@ -371,8 +381,9 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     ];
 
     const syncOptions = {
+      refreshAllMetadataBeforeAnalyze: false,
       updateToLatest: false,
-      completeSiblingVersions: true,
+      completeSiblingVersions: false,
       includeDev: false,
       includePeer: true,
       includeOptional: true,
@@ -453,42 +464,75 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         }
       });
 
-      // 2. 刷新所有缓存包的元数据（带进度回调）
-      this.updateTask(taskId, {
-        message: '刷新元数据...',
-        detailedProgress: {
-          phase: 'refreshing',
-          phaseProgress: 0,
-          totalProgress: 5,
-          processed: 0,
-          total: cachedPackages.length,
-          startTime,
-          phaseDescription: '刷新元数据...'
-        }
-      });
+      // 2. 元数据准备：默认本地优先，按开关决定是否全量刷新
+      const requiresGlobalMetadataRefresh = Boolean(syncOptions.refreshAllMetadataBeforeAnalyze);
+      let analysisMetadata: RefreshedMetadata[] = [];
 
-      const refreshedMetadata = await this.resolver.refreshMetadata(
-        cachedPackages,
-        (progress: AnalysisProgress) => {
-          this.updateTask(taskId, {
-            progress: 5 + Math.round(progress.phaseProgress * 0.25), // 5-30%
-            message: progress.phaseDescription,
-            detailedProgress: {
-              ...progress,
-              totalProgress: 5 + Math.round(progress.phaseProgress * 0.25)
-            }
-          });
-        }
-      );
+      if (requiresGlobalMetadataRefresh) {
+        this.updateTask(taskId, {
+          message: '刷新元数据...',
+          detailedProgress: {
+            phase: 'refreshing',
+            phaseProgress: 0,
+            totalProgress: 5,
+            processed: 0,
+            total: cachedPackages.length,
+            startTime,
+            phaseDescription: '刷新元数据...'
+          }
+        });
+
+        analysisMetadata = await this.resolver.refreshMetadata(
+          cachedPackages,
+          (progress: AnalysisProgress) => {
+            this.updateTask(taskId, {
+              progress: 5 + Math.round(progress.phaseProgress * 0.2), // 5-25%
+              message: progress.phaseDescription,
+              detailedProgress: {
+                ...progress,
+                totalProgress: 5 + Math.round(progress.phaseProgress * 0.2)
+              }
+            });
+          }
+        );
+      } else {
+        this.updateTask(taskId, {
+          message: '加载本地元数据...',
+          detailedProgress: {
+            phase: 'refreshing',
+            phaseProgress: 0,
+            totalProgress: 5,
+            processed: 0,
+            total: cachedPackages.length,
+            startTime,
+            phaseDescription: '加载本地元数据...'
+          }
+        });
+
+        analysisMetadata = await this.prepareLocalMetadataForAnalysis(
+          cachedPackages,
+          (progress: AnalysisProgress) => {
+            this.updateTask(taskId, {
+              progress: 5 + Math.round(progress.phaseProgress * 0.2), // 5-25%
+              message: progress.phaseDescription,
+              detailedProgress: {
+                ...progress,
+                totalProgress: 5 + Math.round(progress.phaseProgress * 0.2)
+              }
+            });
+          },
+          startTime
+        );
+      }
 
       // 3. 分析依赖关系（带进度回调）
       this.updateTask(taskId, {
         message: '分析依赖关系...',
-        progress: 30,
+        progress: 25,
         detailedProgress: {
           phase: 'analyzing',
           phaseProgress: 0,
-          totalProgress: 30,
+          totalProgress: 25,
           processed: 0,
           total: cachedPackages.length,
           startTime,
@@ -498,32 +542,73 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
       const missingPackages = await this.resolver.analyzeMissingDependencies(
         cachedPackages,
-        refreshedMetadata,
+        analysisMetadata,
         syncOptions,
         (progress: AnalysisProgress) => {
           this.updateTask(taskId, {
-            progress: 30 + Math.round(progress.phaseProgress * 0.5), // 30-80%
+            progress: 25 + Math.round(progress.phaseProgress * 0.5), // 25-75%
             message: progress.phaseDescription,
             detailedProgress: {
               ...progress,
-              totalProgress: 30 + Math.round(progress.phaseProgress * 0.5)
+              totalProgress: 25 + Math.round(progress.phaseProgress * 0.5)
             }
           });
         },
         startTime
       );
 
-      // 依赖分析完成后立即释放 packument 缓存，回收大量内存
+      let refreshedCount = 0;
+      if (requiresGlobalMetadataRefresh) {
+        refreshedCount = analysisMetadata.length;
+      } else {
+        const metadataTargets = Array.from(new Set(missingPackages.map((pkg) => pkg.name)));
+        this.updateTask(taskId, {
+          message: '定向更新缺口依赖元数据...',
+          progress: 75,
+          detailedProgress: {
+            phase: 'refreshing',
+            phaseProgress: 0,
+            totalProgress: 75,
+            processed: 0,
+            total: metadataTargets.length,
+            startTime,
+            phaseDescription: '定向更新缺口依赖元数据...'
+          }
+        });
+
+        refreshedCount = await this.savePackumentsFromResolverCache(
+          metadataTargets,
+          (completed, total, packageName) => {
+            const ratio = total <= 0 ? 1 : completed / total;
+            this.updateTask(taskId, {
+              progress: 75 + Math.round(ratio * 10), // 75-85%
+              message: `定向同步元数据 (${completed}/${total}): ${packageName}`,
+              detailedProgress: {
+                phase: 'refreshing',
+                phaseProgress: Math.round(ratio * 100),
+                totalProgress: 75 + Math.round(ratio * 10),
+                currentPackage: packageName,
+                processed: completed,
+                total,
+                startTime,
+                phaseDescription: `定向同步元数据: ${packageName}`
+              }
+            });
+          }
+        );
+      }
+
+      // 依赖分析阶段使用的 packument 缓存在这里释放，回收内存
       this.resolver.clearCache();
 
       // 4. 分析平台二进制包
       this.updateTask(taskId, {
         message: '检测平台二进制包...',
-        progress: 80,
+        progress: 85,
         detailedProgress: {
           phase: 'detecting-binaries',
           phaseProgress: 0,
-          totalProgress: 80,
+          totalProgress: 85,
           processed: 0,
           total: cachedPackages.length,
           startTime,
@@ -564,11 +649,11 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
             binaryChecked++;
             const binaryProgress = Math.round((binaryChecked / binaryTotal) * 100);
             this.updateTask(taskId, {
-              progress: 80 + Math.round(binaryProgress * 0.15), // 80-95%
+              progress: 85 + Math.round(binaryProgress * 0.1), // 85-95%
               detailedProgress: {
                 phase: 'detecting-binaries',
                 phaseProgress: binaryProgress,
-                totalProgress: 80 + Math.round(binaryProgress * 0.15),
+                totalProgress: 85 + Math.round(binaryProgress * 0.1),
                 currentPackage: pkg.name,
                 processed: binaryChecked,
                 total: cachedPackages.length,
@@ -589,7 +674,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       const analysisResult: AnalysisResult = {
         analysisId,
         scanned: cachedPackages.length,
-        refreshed: refreshedMetadata.length,
+        refreshed: refreshedCount,
         toDownload: uniquePackages,
         platforms: targetPlatforms.map((p: any) => `${p.os}-${p.arch}`),
         timestamp: Date.now()
@@ -815,17 +900,164 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     return Math.max(1, Math.min(50, Math.floor(configured)));
   }
 
-  private async savePackumentsForPackages(
+  private async prepareLocalMetadataForAnalysis(
+    cachedPackages: CachedPackage[],
+    onProgress?: (progress: AnalysisProgress) => void,
+    progressStartTime?: number
+  ): Promise<RefreshedMetadata[]> {
+    const metadata: RefreshedMetadata[] = [];
+    const limit = pLimit(this.getConcurrency());
+    const startTime = progressStartTime || Date.now();
+    const total = cachedPackages.length;
+    let completed = 0;
+
+    await Promise.all(
+      cachedPackages.map((pkg) =>
+        limit(async () => {
+          try {
+            const packument = await this.buildLocalPackumentForAnalysis(pkg);
+            this.resolver.seedPackument(pkg.name, packument);
+            metadata.push({
+              name: pkg.name,
+              distTags: packument['dist-tags'] || {},
+              versions: Object.keys(packument.versions || {}),
+              latestManifest: null
+            });
+          } catch (error: any) {
+            this.logger.warn(
+              { name: pkg.name, error: error.message },
+              'Failed to prepare local metadata for @{name}: @{error}'
+            );
+          } finally {
+            completed++;
+            if (onProgress) {
+              const phaseProgress = total <= 0 ? 100 : Math.round((completed / total) * 100);
+              onProgress({
+                phase: 'refreshing',
+                phaseProgress,
+                totalProgress: phaseProgress,
+                currentPackage: pkg.name,
+                processed: completed,
+                total,
+                startTime,
+                phaseDescription: `加载本地元数据: ${pkg.name}`
+              });
+            }
+          }
+        })
+      )
+    );
+
+    return metadata;
+  }
+
+  private async buildLocalPackumentForAnalysis(pkg: CachedPackage): Promise<any> {
+    const localPackument = await this.scanner.readPackument(pkg.name);
+    const localVersions = new Set(pkg.versions);
+
+    const packument: any = {
+      name: pkg.name,
+      versions: {},
+      'dist-tags': {}
+    };
+
+    const existingVersions =
+      localPackument && typeof localPackument.versions === 'object' && localPackument.versions
+        ? (localPackument.versions as Record<string, any>)
+        : {};
+
+    for (const version of pkg.versions) {
+      if (existingVersions[version] && typeof existingVersions[version] === 'object') {
+        packument.versions[version] = existingVersions[version];
+        continue;
+      }
+
+      const extracted = await this.scanner.extractVersionFromTarball(pkg.name, version);
+      if (extracted) {
+        packument.versions[version] = extracted;
+      }
+    }
+
+    const existingDistTags =
+      localPackument &&
+      typeof localPackument['dist-tags'] === 'object' &&
+      localPackument['dist-tags']
+        ? (localPackument['dist-tags'] as Record<string, string>)
+        : {};
+    for (const [tag, version] of Object.entries(existingDistTags)) {
+      if (localVersions.has(version)) {
+        packument['dist-tags'][tag] = version;
+      }
+    }
+
+    const localLatest = this.findLatestVersion(pkg.versions);
+    if (localLatest) {
+      packument['dist-tags'].latest = localLatest;
+    }
+
+    return packument;
+  }
+
+  private async savePackumentsFromResolverCache(
     packageNames: string[],
     onProgress?: (completed: number, total: number, packageName: string) => void
-  ): Promise<void> {
+  ): Promise<number> {
     const uniqueNames = Array.from(new Set(packageNames));
     if (uniqueNames.length === 0) {
-      return;
+      return 0;
     }
 
     const limit = pLimit(this.getConcurrency());
     let completed = 0;
+    let saved = 0;
+    const total = uniqueNames.length;
+
+    await Promise.all(
+      uniqueNames.map((packageName) =>
+        limit(async () => {
+          try {
+            const cachedPackument = this.resolver.getCachedPackument(packageName);
+            const packument = cachedPackument || await this.downloader.downloadPackument(packageName);
+            const backfilled = this.ensureDistfilesFromVersions(packument);
+            await this.downloader.savePackument(packageName, packument);
+            saved++;
+
+            if (backfilled > 0) {
+              this.logger.debug(
+                { packageName, count: backfilled },
+                'Backfilled @{count} _distfiles entries for @{packageName}'
+              );
+            }
+          } catch (error: any) {
+            this.logger.warn(
+              { name: packageName, error: error.message },
+              'Failed to save targeted packument for @{name}: @{error}'
+            );
+          } finally {
+            completed++;
+            if (onProgress) {
+              onProgress(completed, total, packageName);
+            }
+          }
+        })
+      )
+    );
+
+    return saved;
+  }
+
+  private async savePackumentsForPackages(
+    packageNames: string[],
+    onProgress?: (completed: number, total: number, packageName: string) => void
+  ): Promise<number> {
+    const uniqueNames = Array.from(new Set(packageNames));
+    if (uniqueNames.length === 0) {
+      return 0;
+    }
+
+    const limit = pLimit(this.getConcurrency());
+    let completed = 0;
+    let saved = 0;
     const total = uniqueNames.length;
 
     await Promise.all(
@@ -835,6 +1067,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
             const packument = await this.downloader.downloadPackument(packageName);
             const backfilled = this.ensureDistfilesFromVersions(packument);
             await this.downloader.savePackument(packageName, packument);
+            saved++;
 
             if (backfilled > 0) {
               this.logger.debug(
@@ -856,6 +1089,8 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         })
       )
     );
+
+    return saved;
   }
 
   private ensureDistfilesFromVersions(packument: any): number {
