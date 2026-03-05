@@ -146,14 +146,22 @@ export class OfflinePackageStorage extends LocalFS {
     // 尝试获取包的访问配置
     let packageAccess: any = { proxy: [] };
     const hasGetMatchedPackagesSpec = typeof this.config.getMatchedPackagesSpec === 'function';
+    let hasProxy = false;
+    let canDetermineProxy = false;
 
     if (hasGetMatchedPackagesSpec) {
       packageAccess = this.config.getMatchedPackagesSpec(name) || { proxy: [] };
+      const proxyConfig = packageAccess?.proxy;
+      hasProxy = Array.isArray(proxyConfig) ? proxyConfig.length > 0 : !!proxyConfig;
+      canDetermineProxy = true;
     }
 
     // 判断是否为 offline 模式
-    const hasProxy = packageAccess?.proxy && packageAccess.proxy.length > 0;
-    const offline = this.config.offline === true || !hasProxy;
+    // 规则：
+    // 1) 显式配置 offline: true 时，始终离线
+    // 2) 能判断 proxy 时，无 proxy 的包走离线
+    // 3) 无法判断 proxy 时，默认在线，避免阻断回源
+    const offline = this.config.offline === true || (canDetermineProxy && !hasProxy);
 
     // 添加详细的调试日志
     this.logger.debug(
@@ -161,11 +169,12 @@ export class OfflinePackageStorage extends LocalFS {
         packageName: name,
         offline,
         hasProxy,
+        canDetermineProxy,
         configOffline: this.config.offline,
         hasGetMatchedPackagesSpec,
         proxy: packageAccess?.proxy ? JSON.stringify(packageAccess.proxy) : 'undefined'
       },
-      '[verdaccio-offline-storage/readPackage] Package @{packageName} mode check: offline=@{offline}, hasProxy=@{hasProxy}, configOffline=@{configOffline}, hasGetMatchedPackagesSpec=@{hasGetMatchedPackagesSpec}'
+      '[verdaccio-offline-storage/readPackage] Package @{packageName} mode check: offline=@{offline}, hasProxy=@{hasProxy}, canDetermineProxy=@{canDetermineProxy}, configOffline=@{configOffline}, hasGetMatchedPackagesSpec=@{hasGetMatchedPackagesSpec}'
     );
 
     const resolveMode = offline ? 'offline' : 'online';

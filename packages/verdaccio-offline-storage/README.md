@@ -19,7 +19,8 @@ This is an improved fork of the original `verdaccio-offline-storage` plugin. Key
 - **Semver Validation**: Uses proper semver validation when extracting versions from tarball filenames
 - **Prerelease Handling**: Prefers stable versions over prereleases when setting `dist-tags.latest`
 - **Robust Sorting**: Uses `semver.compare()` instead of simple string comparison for accurate version ordering
-- **Scoped Tarball Name Compatibility** (New in v3.1.2): Supports both `package-x.y.z.tgz` and `scope-package-x.y.z.tgz`, rewrites `dist.tarball` to the actual local filename, and remaps tarball reads to avoid 404 in `offline: false`
+- **Scoped Tarball Name Compatibility** (New in v3.1.3): Supports both `package-x.y.z.tgz` and `scope-package-x.y.z.tgz`, rewrites `dist.tarball` to the actual local filename, and remaps tarball reads to avoid 404 in `offline: false`
+- **Proxy Fallback Guard** (New in v3.1.3): When package proxy rules cannot be detected, defaults to online mode (unless `offline: true`) to avoid blocking upstream fetches
 
 ### Improved Error Handling
 - **Async/Await**: Uses modern async/await patterns with Promises instead of callbacks

@@ -19,7 +19,8 @@
 - **Semver 验证**：从 tarball 文件名提取版本时使用正确的 semver 验证
 - **预发布版本处理**：设置 `dist-tags.latest` 时优先选择稳定版本而非预发布版本
 - **健壮的排序**：使用 `semver.compare()` 而非简单字符串比较，确保版本排序准确
-- **Scoped 包文件名兼容**（v3.1.2 新增）：同时兼容 `package-x.y.z.tgz` 和 `scope-package-x.y.z.tgz`，并将 `dist.tarball` 修正为本地实际文件名；同时在 `offline: false` 下对 tarball 读取做别名映射，避免 404
+- **Scoped 包文件名兼容**（v3.1.3 新增）：同时兼容 `package-x.y.z.tgz` 和 `scope-package-x.y.z.tgz`，并将 `dist.tarball` 修正为本地实际文件名；同时在 `offline: false` 下对 tarball 读取做别名映射，避免 404
+- **回源兜底修复**（v3.1.3 新增）：当无法识别包的 proxy 规则时，默认按在线模式处理（除非显式 `offline: true`），避免阻断上游回源
 
 ### 改进的错误处理
 - **Async/Await**：使用现代 async/await 模式替代回调
