@@ -48,6 +48,10 @@ middlewares:
         arch: x64
       - os: darwin
         arch: arm64
+    # Tarball integrity verification (default: true)
+    verifyChecksum: true
+    # Minimum tarball size in bytes (default: 128)
+    minTarballSize: 128
     # Sync options
     sync:
       refreshAllMetadataBeforeAnalyze: false

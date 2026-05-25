@@ -44,6 +44,7 @@
 - **无需锁文件**：如果在线时已缓存，所有依赖都能正确解析
 - **透明**：与现有的 `local-storage` 缓存兼容，无需修改
 - **选择性离线模式**：可以全局启用或根据 proxy 配置按包启用
+- **Tarball 完整性校验**：校验本地 tarball SHA-1 与 metadata 是否一致，自动剔除损坏文件
 - **Web 界面集成**：在 Verdaccio 的 Web 界面中列出所有本地可用的包
 
 ## 安装
@@ -67,6 +68,10 @@ store:
   '@jayxuz/verdaccio-offline-storage':
     # 可选：强制所有包使用离线模式
     offline: true
+    # 可选：校验本地 tarball SHA-1 是否与 metadata 一致（默认 true）
+    verifyChecksum: true
+    # 可选：tarball 最小体积字节数，低于此值视为损坏（默认 128）
+    minTarballSize: 128
 ```
 
 ### 离线模式选项
@@ -101,9 +106,10 @@ store:
 ## 工作原理
 
 1. 当请求包时，插件扫描存储目录中的 `.tgz` 文件
-2. 过滤包元数据，只包含有本地 tarball 的版本
-3. 将 `dist-tags.latest` 更新为本地可用的最高稳定版本
-4. 将修改后的元数据返回给客户端
+2. 对每个 tarball 进行校验：跳过低于最小体积阈值的文件，检查 SHA-1 是否与 metadata 一致（当 `verifyChecksum` 启用时），自动剔除损坏文件
+3. 过滤包元数据，只包含有有效本地 tarball 的版本
+4. 将 `dist-tags.latest` 更新为本地可用的最高稳定版本
+5. 将修改后的元数据返回给客户端
 
 这意味着：
 - `npm install package@latest` 安装最新的**本地可用**版本

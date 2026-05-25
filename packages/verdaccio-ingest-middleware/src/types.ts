@@ -19,6 +19,10 @@ export interface IngestConfig {
   timeout?: number;
   platforms?: PlatformConfig[];
   sync?: SyncOptions;
+  /** 下载后校验 tarball SHA-1 是否与上游 registry 一致（默认 true） */
+  verifyChecksum?: boolean;
+  /** tarball 最小体积（字节），低于此值视为损坏（默认 128） */
+  minTarballSize?: number;
 }
 
 /**
@@ -82,6 +86,8 @@ export interface DownloadResult {
   integrity: string;
   size: number;
   manifest: any;
+  /** tarball 是否通过了 SHA-1 校验 */
+  verified: boolean;
 }
 
 /**
@@ -145,6 +151,8 @@ export interface PackageDownloadStatus {
   status: 'pending' | 'downloading' | 'success' | 'failed';
   error?: string;
   size?: number;
+  /** 下载是否通过了 SHA-1 校验 */
+  verified?: boolean;
 }
 
 /**

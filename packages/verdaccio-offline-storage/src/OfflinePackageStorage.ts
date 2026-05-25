@@ -1,5 +1,6 @@
-import { existsSync, readdirSync } from 'fs';
-import { readdir } from 'fs/promises';
+import { existsSync, readdirSync, createReadStream } from 'fs';
+import { readdir, stat, unlink } from 'fs/promises';
+import { createHash } from 'crypto';
 import { basename, dirname, join } from 'path';
 import semver from 'semver';
 import { Logger, Manifest, Callback } from '@verdaccio/types';
@@ -196,11 +197,58 @@ export class OfflinePackageStorage extends LocalFS {
         );
 
         const items = await readdir(this.path);
+        const minSize = this.config.minTarballSize ?? 128;
+        const verifyChecksum = this.config.verifyChecksum !== false;
         const tarballsByVersion = new Map<string, string[]>();
         for (const item of items) {
           if (!item.endsWith('.tgz')) continue;
           const version = this.extractVersionFromTarballFilename(item);
           if (!version) continue;
+
+          const tarballPath = join(this.path, item);
+
+          // 1. 检查文件大小（低开销）
+          try {
+            const fileStat = await stat(tarballPath);
+            if (fileStat.size < minSize) {
+              this.logger.warn(
+                { packageName: name, item, size: fileStat.size },
+                '[verdaccio-offline-storage] Skipping undersized tarball @{item} for @{packageName} (@{size} bytes)'
+              );
+              continue;
+            }
+          } catch {
+            continue;
+          }
+
+          // 2. 校验 SHA-1（如果启用且 metadata 中有 shasum）
+          if (verifyChecksum) {
+            const versionMeta = data?.versions?.[version];
+            const expectedShasum = versionMeta?.dist?.shasum;
+            if (expectedShasum && typeof expectedShasum === 'string' && expectedShasum.length > 0) {
+              try {
+                const actualShasum = await this.computeTarballShasum(tarballPath);
+                if (actualShasum !== expectedShasum) {
+                  this.logger.warn(
+                    { packageName: name, version, expected: expectedShasum, actual: actualShasum },
+                    '[verdaccio-offline-storage] Checksum mismatch for @{packageName}@@{version}, removing corrupt tarball'
+                  );
+                  try {
+                    await unlink(tarballPath);
+                  } catch {
+                    // 忽略删除失败
+                  }
+                  continue;
+                }
+              } catch (err: any) {
+                this.logger.warn(
+                  { packageName: name, version, error: err.message },
+                  '[verdaccio-offline-storage] Failed to compute checksum for @{packageName}@@{version}: @{error}'
+                );
+                continue;
+              }
+            }
+          }
 
           const filenames = tarballsByVersion.get(version) || [];
           filenames.push(item);
@@ -471,6 +519,16 @@ export class OfflinePackageStorage extends LocalFS {
     }
 
     return requestedTarballName;
+  }
+
+  private computeTarballShasum(filePath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const sha1 = createHash('sha1');
+      const stream = createReadStream(filePath);
+      stream.on('data', (chunk: Buffer | string) => sha1.update(chunk));
+      stream.on('end', () => resolve(sha1.digest('hex')));
+      stream.on('error', reject);
+    });
   }
 
   private getScopedTarballNameCandidates(version: string): string[] {

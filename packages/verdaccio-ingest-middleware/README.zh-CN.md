@@ -48,6 +48,10 @@ middlewares:
         arch: x64
       - os: darwin
         arch: arm64
+    # tarball 完整性校验（默认 true，下载后对比 SHA-1）
+    verifyChecksum: true
+    # tarball 最小体积字节数（默认 128）
+    minTarballSize: 128
     # 同步选项
     sync:
       refreshAllMetadataBeforeAnalyze: false

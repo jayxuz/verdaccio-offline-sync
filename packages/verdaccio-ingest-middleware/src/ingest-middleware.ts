@@ -806,11 +806,14 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
             const result = await this.downloader.downloadPackage(pkg.name, pkg.version);
             status.status = 'success';
             status.size = result?.size;
+            status.verified = result?.verified;
             downloadedPackageNames.add(pkg.name);
           } catch (error: any) {
             status.status = 'failed';
             status.error = error.message;
             failedPackages.push(pkg);
+            // 清理可能残留的损坏 tarball
+            await this.downloader.cleanupTarball(pkg.name, pkg.version);
           }
 
           return status;

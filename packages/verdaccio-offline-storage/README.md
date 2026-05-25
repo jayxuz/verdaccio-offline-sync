@@ -44,6 +44,7 @@ This is an improved fork of the original `verdaccio-offline-storage` plugin. Key
 - **No Lockfile Required**: All dependencies resolve correctly if they were cached when online
 - **Transparent**: Works with existing `local-storage` cache without modifications
 - **Selective Offline Mode**: Can be enabled globally or per-package based on proxy configuration
+- **Tarball Integrity Verification**: Validates local tarball SHA-1 checksums against metadata and auto-removes corrupt files
 - **Web UI Integration**: Lists all locally available packages in Verdaccio's web interface
 
 ## Installation
@@ -67,6 +68,10 @@ store:
   '@jayxuz/verdaccio-offline-storage':
     # Optional: force offline mode for ALL packages
     offline: true
+    # Optional: verify local tarball SHA-1 against metadata (default: true)
+    verifyChecksum: true
+    # Optional: minimum tarball size in bytes, smaller files treated as corrupt (default: 128)
+    minTarballSize: 128
 ```
 
 ### Offline Mode Options
@@ -101,9 +106,10 @@ store:
 ## How It Works
 
 1. When a package is requested, the plugin scans the storage directory for `.tgz` files
-2. It filters the package metadata to only include versions that have local tarballs
-3. It updates `dist-tags.latest` to the highest locally available stable version
-4. The modified metadata is returned to the client
+2. Each tarball is validated: files below the minimum size threshold are skipped, and SHA-1 checksums are verified against metadata (when `verifyChecksum` is enabled)
+3. It filters the package metadata to only include versions that have valid local tarballs
+4. It updates `dist-tags.latest` to the highest locally available stable version
+5. The modified metadata is returned to the client
 
 This means:
 - `npm install package@latest` installs the latest **locally available** version

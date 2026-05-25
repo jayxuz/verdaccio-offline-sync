@@ -38,6 +38,7 @@
 - **本地路径导入** - 支持从服务器本地路径直接导入差分包
 - **链式依赖与重建增强** - 修复链式依赖漏下载问题，增强 `/ingest/sync` 与 `/ingest/rebuild-index` 的元数据写回能力
 - **Scoped 包文件名兼容** - 同时兼容 `package-x.y.z.tgz` 与 `scope-package-x.y.z.tgz` 两种 tarball 命名
+- **完整性校验** - 下载后自动校验 tarball SHA-1，防止损坏包污染本地缓存；本地版本解析时同步校验文件完整性，自动剔除损坏文件
 
 ## 插件组成
 
@@ -127,6 +128,8 @@ storage: /verdaccio/storage/data
 store:
   '@jayxuz/verdaccio-offline-storage':
     offline: false
+    verifyChecksum: true
+    minTarballSize: 128
 
 uplinks:
   npmjs:
@@ -149,6 +152,10 @@ middlewares:
     # 并发处理数（下载/扫描/分析/导出链路，默认：5）
     concurrency: 5
     timeout: 60000
+    # tarball 完整性校验（默认 true，下载后对比 SHA-1）
+    verifyChecksum: true
+    # tarball 最小体积字节数，低于此值视为损坏（默认 128）
+    minTarballSize: 128
     platforms:
       - os: linux
         arch: x64
@@ -179,6 +186,10 @@ storage: /verdaccio/storage/data
 store:
   '@jayxuz/verdaccio-offline-storage':
     offline: true  # 强制离线模式
+    # 校验本地 tarball SHA-1 是否与 metadata 一致（默认 true）
+    verifyChecksum: true
+    # tarball 最小体积字节数，低于此值视为损坏（默认 128）
+    minTarballSize: 128
 
 packages:
   '@*/*':
@@ -592,6 +603,16 @@ curl -X POST http://external:4873/_/ingest/sync \
 | `sync.includePeer` | boolean | true | 是否包含 peerDependencies |
 | `sync.includeOptional` | boolean | true | 是否包含 optionalDependencies |
 | `sync.maxDepth` | number | 10 | 依赖树最大深度 |
+| `verifyChecksum` | boolean | true | 下载后校验 tarball SHA-1 是否与上游一致 |
+| `minTarballSize` | number | 128 | tarball 最小体积（字节），低于此值视为损坏 |
+
+### offline-storage 配置项
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `offline` | boolean | false | 强制离线模式（所有包本地解析） |
+| `verifyChecksum` | boolean | true | 校验本地 tarball SHA-1 是否与 metadata 一致 |
+| `minTarballSize` | number | 128 | tarball 最小体积（字节），低于此值视为损坏 |
 
 ### metadata-healer 配置项
 

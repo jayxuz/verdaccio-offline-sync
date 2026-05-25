@@ -38,6 +38,7 @@ English | [中文](./README.md)
 - **Local Path Import** - Import differential packages directly from server local paths
 - **Dependency Chain & Rebuild Hardening** - Fixes missing transitive dependency downloads and improves metadata persistence in `/ingest/sync` and `/ingest/rebuild-index`
 - **Scoped Tarball Filename Compatibility** - Supports both `package-x.y.z.tgz` and `scope-package-x.y.z.tgz` naming styles
+- **Integrity Verification** - Auto-validates tarball SHA-1 checksums after download to prevent corrupt packages from polluting local cache; verifies file integrity during local version resolution and auto-removes corrupt files
 
 ## Plugin Components
 
@@ -126,6 +127,8 @@ storage: /verdaccio/storage/data
 store:
   '@jayxuz/verdaccio-offline-storage':
     offline: false
+    verifyChecksum: true
+    minTarballSize: 128
 
 uplinks:
   npmjs:
@@ -148,6 +151,10 @@ middlewares:
     # Processing concurrency for download/scan/analyze/export (default: 5)
     concurrency: 5
     timeout: 60000
+    # Tarball integrity verification (default: true, compares SHA-1 after download)
+    verifyChecksum: true
+    # Minimum tarball size in bytes, smaller files treated as corrupt (default: 128)
+    minTarballSize: 128
     platforms:
       - os: linux
         arch: x64
@@ -178,6 +185,10 @@ storage: /verdaccio/storage/data
 store:
   '@jayxuz/verdaccio-offline-storage':
     offline: true  # Force offline mode
+    # Verify local tarball SHA-1 against metadata (default: true)
+    verifyChecksum: true
+    # Minimum tarball size in bytes, smaller files treated as corrupt (default: 128)
+    minTarballSize: 128
 
 packages:
   '@*/*':
@@ -591,6 +602,16 @@ Automatically detects and downloads platform-specific packages:
 | `sync.includePeer` | boolean | true | Include peerDependencies |
 | `sync.includeOptional` | boolean | true | Include optionalDependencies |
 | `sync.maxDepth` | number | 10 | Max dependency tree depth |
+| `verifyChecksum` | boolean | true | Verify tarball SHA-1 against upstream after download |
+| `minTarballSize` | number | 128 | Minimum tarball size in bytes, smaller files treated as corrupt |
+
+### offline-storage Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `offline` | boolean | false | Force offline mode (resolve all packages locally) |
+| `verifyChecksum` | boolean | true | Verify local tarball SHA-1 against metadata |
+| `minTarballSize` | number | 128 | Minimum tarball size in bytes, smaller files treated as corrupt |
 
 ### metadata-healer Options
 

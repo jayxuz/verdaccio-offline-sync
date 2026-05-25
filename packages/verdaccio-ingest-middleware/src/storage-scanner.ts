@@ -170,7 +170,22 @@ export class StorageScanner {
       );
 
       // 扫描 .tgz 文件获取版本列表
+      const minSize = this.getMinTarballSize();
       for (const file of tgzFiles) {
+        const filePath = path.join(packagePath, file);
+        try {
+          const fileStat = await stat(filePath);
+          if (fileStat.size < minSize) {
+            this.logger.warn(
+              { packageName, file, size: fileStat.size },
+              '[StorageScanner] Skipping undersized tarball @{file} for @{packageName} (@{size} bytes)'
+            );
+            continue;
+          }
+        } catch {
+          continue;
+        }
+
         const version = this.extractVersionFromFilename(packageName, file);
         if (version) {
           versions.push(version);
@@ -412,6 +427,11 @@ export class StorageScanner {
       : packageName;
     const unscopedStyle = `${unscopedName}-${version}.tgz`;
     return Array.from(new Set([scopedStyle, unscopedStyle]));
+  }
+
+  private getMinTarballSize(): number {
+    const configured = Number(this.config.minTarballSize);
+    return Number.isFinite(configured) && configured > 0 ? configured : 128;
   }
 
   /**

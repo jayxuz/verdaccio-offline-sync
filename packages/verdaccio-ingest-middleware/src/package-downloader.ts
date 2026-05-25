@@ -1,6 +1,6 @@
 import pacote from 'pacote';
 import { createHash } from 'crypto';
-import { mkdir, writeFile } from 'fs/promises';
+import { mkdir, writeFile, unlink } from 'fs/promises';
 import path from 'path';
 import pLimit from 'p-limit';
 import { Logger } from '@verdaccio/types';
@@ -104,25 +104,73 @@ export class PackageDownloader {
       throw new Error(`Downloaded tarball for ${spec} is empty`);
     }
 
-    // 计算哈希
+    // 最小体积检查
+    const minSize = this.getMinTarballSize();
+    if (tarballBuffer.length < minSize) {
+      throw new Error(
+        `Downloaded tarball for ${spec} is too small (${tarballBuffer.length} bytes, minimum ${minSize})`
+      );
+    }
+
+    // 计算哈希（在写入磁盘前，避免坏文件落地）
     const sha1Hash = createHash('sha1');
     const sha512Hash = createHash('sha512');
     sha1Hash.update(tarballBuffer);
     sha512Hash.update(tarballBuffer);
     const size = tarballBuffer.length;
-
-    // 写入文件
-    await writeFile(tarballPath, tarballBuffer);
-
     const shasum = sha1Hash.digest('hex');
     const integrity = `sha512-${sha512Hash.digest('base64')}`;
 
-    // 获取完整 manifest
-    const manifest = await this.getManifest(spec, true);
+    // 获取 manifest 用于校验
+    let manifest: any;
+    let verified = false;
+
+    try {
+      manifest = await this.getManifest(spec, true);
+    } catch (manifestErr: any) {
+      // manifest 获取失败时，仍然写入文件（已有内容），但标记未校验
+      this.logger.warn(
+        { spec, error: manifestErr.message },
+        'Failed to fetch manifest for @{spec}, writing tarball without verification'
+      );
+      await writeFile(tarballPath, tarballBuffer);
+
+      return {
+        package: pkg,
+        tarballPath,
+        tarballName,
+        shasum,
+        integrity,
+        size,
+        manifest: null,
+        verified: false
+      };
+    }
+
+    // 校验 SHA-1
+    if (this.shouldVerifyChecksum()) {
+      const expectedShasum = manifest?.dist?.shasum;
+      if (expectedShasum && typeof expectedShasum === 'string' && expectedShasum.length > 0) {
+        if (shasum !== expectedShasum) {
+          throw new Error(
+            `SHA-1 checksum mismatch for ${spec}: expected ${expectedShasum}, got ${shasum}`
+          );
+        }
+        verified = true;
+      } else {
+        this.logger.warn(
+          { spec },
+          'No dist.shasum in manifest for @{spec}, skipping checksum verification'
+        );
+      }
+    }
+
+    // 校验通过后写入磁盘
+    await writeFile(tarballPath, tarballBuffer);
 
     this.logger.info(
-      { name: pkg.name, version: pkg.version, shasum, size, registry: this.registry },
-      'Downloaded @{name}@@{version} (shasum: @{shasum}, size: @{size} bytes)'
+      { name: pkg.name, version: pkg.version, shasum, size, verified, registry: this.registry },
+      'Downloaded @{name}@@{version} (shasum: @{shasum}, size: @{size} bytes, verified: @{verified})'
     );
 
     return {
@@ -132,8 +180,28 @@ export class PackageDownloader {
       shasum,
       integrity,
       size,
-      manifest
+      manifest,
+      verified
     };
+  }
+
+  /**
+   * 清理下载失败/校验失败后残留的 tarball 文件
+   */
+  async cleanupTarball(packageName: string, version: string): Promise<void> {
+    const tarballPath = path.join(
+      this.getPackagePath(packageName),
+      this.getTarballName(packageName, version)
+    );
+    try {
+      await unlink(tarballPath);
+      this.logger.debug(
+        { packageName, version },
+        'Cleaned up corrupt tarball for @{packageName}@@{version}'
+      );
+    } catch {
+      // 文件可能不存在，忽略
+    }
   }
 
   /**
@@ -232,6 +300,15 @@ export class PackageDownloader {
       return 5;
     }
     return Math.max(1, Math.min(50, Math.floor(configured)));
+  }
+
+  private getMinTarballSize(): number {
+    const configured = Number(this.config.minTarballSize);
+    return Number.isFinite(configured) && configured > 0 ? configured : 128;
+  }
+
+  private shouldVerifyChecksum(): boolean {
+    return this.config.verifyChecksum !== false;
   }
 
   /**
