@@ -1,0 +1,52 @@
+# 在线侧示例：连接上游并缓存包，供后续离线导出。
+# access/publish 仅用于演示；部署时请保留并审查生产环境原有访问控制，
+# 不要用本示例覆盖生产权限。
+storage: ./storage/data
+
+store:
+  '@jayxuz/verdaccio-offline-storage':
+    offline: false
+    verifyChecksum: true
+    minTarballSize: 128
+
+uplinks:
+  npmjs:
+    url: https://registry.npmmirror.com
+
+packages:
+  '@*/*':
+    access: $all
+    publish: $authenticated
+    proxy: npmjs
+  '**':
+    access: $all
+    publish: $authenticated
+    proxy: npmjs
+
+middlewares:
+  ingest-middleware:
+    enabled: true
+    upstreamRegistry: https://registry.npmmirror.com
+    concurrency: 5
+    timeout: 60000
+    verifyChecksum: true
+    minTarballSize: 128
+    platforms:
+      - os: linux
+        arch: x64
+        libc: glibc
+      - os: linux
+        arch: arm64
+        libc: glibc
+      - os: win32
+        arch: x64
+      - os: win32
+        arch: arm64
+    sync:
+      refreshAllMetadataBeforeAnalyze: false
+      updateToLatest: false
+      completeSiblingVersions: false
+      includeDev: false
+      includePeer: true
+      includeOptional: true
+      maxDepth: 10

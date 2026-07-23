@@ -1,0 +1,26 @@
+# 离线侧示例：只从本地存储消费包，并修复返回的元数据。
+# access/publish 仅用于演示；部署时请保留并审查生产环境原有访问控制，
+# 不要用本示例覆盖生产权限。
+storage: ./storage/data
+
+store:
+  '@jayxuz/verdaccio-offline-storage':
+    offline: true
+    verifyChecksum: true
+    minTarballSize: 128
+
+packages:
+  '@*/*':
+    access: $all
+    publish: $authenticated
+  '**':
+    access: $all
+    publish: $authenticated
+
+filters:
+  metadata-healer:
+    enabled: true
+    syncConcurrency: 5
+    scanCacheTTL: 60000
+    shasumCacheSize: 10000
+    autoUpdateLatest: true
