@@ -5,6 +5,7 @@ import { basename, dirname, join } from 'path';
 import semver from 'semver';
 import { Logger, Manifest, Callback } from '@verdaccio/types';
 import { OfflineStorageConfig } from './types';
+import { normalizeLocalManifest } from './manifest-utils';
 
 // Import LocalFS from @verdaccio/local-storage-legacy
 // Verdaccio 6.x uses local-storage-legacy package
@@ -51,8 +52,9 @@ export class OfflinePackageStorage extends LocalFS {
    * 重写此方法以添加调试日志，跟踪元数据保存操作
    */
   savePackage(name: string, value: Manifest, cb: Callback): void {
-    const versionCount = Object.keys(value.versions || {}).length;
-    const distTags = value['dist-tags'] || {};
+    const normalized = normalizeLocalManifest(value);
+    const versionCount = Object.keys(normalized.versions).length;
+    const distTags = normalized['dist-tags'];
 
     // 使用 warn 级别确保日志可见
     this.logger.warn(
@@ -66,7 +68,7 @@ export class OfflinePackageStorage extends LocalFS {
     );
 
     // 调用父类方法保存元数据
-    super.savePackage(name, value, (err: any) => {
+    super.savePackage(name, normalized, (err: any) => {
       if (err) {
         this.logger.error(
           { packageName: name, error: err.message },
@@ -102,16 +104,18 @@ export class OfflinePackageStorage extends LocalFS {
     super.updatePackage(
       name,
       (data: Manifest, cb: Callback) => {
-        const beforeVersions = Object.keys(data.versions || {}).length;
+        const normalized = normalizeLocalManifest(data);
+        const beforeVersions = Object.keys(normalized.versions).length;
         this.logger.debug(
           { packageName: name, versions: beforeVersions },
           '[verdaccio-offline-storage/updatePackage] Before update: @{packageName} has @{versions} versions'
         );
-        updateHandler(data, cb);
+        updateHandler(normalized, cb);
       },
       (pkgName: string, data: Manifest, cb: Callback) => {
-        const versionCount = Object.keys(data.versions || {}).length;
-        const distTags = data['dist-tags'] || {};
+        const normalized = normalizeLocalManifest(data);
+        const versionCount = Object.keys(normalized.versions).length;
+        const distTags = normalized['dist-tags'];
         this.logger.info(
           {
             packageName: pkgName,
@@ -120,7 +124,7 @@ export class OfflinePackageStorage extends LocalFS {
           },
           '[verdaccio-offline-storage/updatePackage] Writing package @{packageName} with @{versions} versions, latest: @{latest}'
         );
-        onWrite(pkgName, data, cb);
+        onWrite(pkgName, normalized, cb);
       },
       transformPackage,
       (err: any) => {
@@ -191,6 +195,7 @@ export class OfflinePackageStorage extends LocalFS {
       }
 
       try {
+        normalizeLocalManifest(data);
         this.logger.debug(
           { packageName: name },
           '[verdaccio-offline-storage/readPackage] Discovering local versions for package: @{packageName}'
