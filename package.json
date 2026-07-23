@@ -10,6 +10,7 @@
     "build": "pnpm -r build",
     "clean": "pnpm -r clean",
     "test": "pnpm -r test",
+    "test:repair-storage-manifests": "node --test scripts/repair-storage-manifests.test.mjs",
     "lint": "pnpm -r lint"
   },
   "devDependencies": {
