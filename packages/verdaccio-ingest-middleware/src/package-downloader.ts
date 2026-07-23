@@ -10,6 +10,8 @@ import {
   DownloadResult,
   PlatformConfig
 } from './types';
+import { persistPackumentWithVerdaccioStorage } from './packument-persistence';
+import type { PackumentPersistence } from './packument-persistence';
 
 /**
  * 包下载器 - 负责从上游仓库下载包
@@ -18,6 +20,8 @@ export class PackageDownloader {
   private config: IngestConfig;
   private logger: Logger;
   private storagePath: string;
+  private verdaccioStorage: any;
+  private persistPackument: PackumentPersistence;
   private registry: string;
   // 请求级缓存，避免短时间内重复拉取同一元数据
   private packumentCache: Map<string, any> = new Map();
@@ -25,10 +29,18 @@ export class PackageDownloader {
   private manifestCache: Map<string, any> = new Map();
   private manifestInflight: Map<string, Promise<any>> = new Map();
 
-  constructor(config: IngestConfig, storagePath: string, logger: Logger) {
+  constructor(
+    config: IngestConfig,
+    storagePath: string,
+    logger: Logger,
+    verdaccioStorage?: any,
+    persistPackument: PackumentPersistence = persistPackumentWithVerdaccioStorage
+  ) {
     this.config = config;
     this.storagePath = storagePath;
     this.logger = logger;
+    this.verdaccioStorage = verdaccioStorage;
+    this.persistPackument = persistPackument;
     this.registry = config.upstreamRegistry || 'https://registry.npmjs.org';
   }
 
@@ -315,16 +327,20 @@ export class PackageDownloader {
    * 保存元数据到存储
    */
   async savePackument(packageName: string, packument: any): Promise<void> {
-    const packagePath = this.getPackagePath(packageName);
-    const metadataPath = path.join(packagePath, 'package.json');
+    try {
+      await this.persistPackument(this.verdaccioStorage, packageName, packument);
 
-    await mkdir(packagePath, { recursive: true });
-    await writeFile(metadataPath, JSON.stringify(packument, null, 2));
-
-    this.logger.debug(
-      { packageName },
-      'Saved packument for @{packageName}'
-    );
+      this.logger.debug(
+        { packageName },
+        'Saved packument for @{packageName}'
+      );
+    } catch (error: any) {
+      this.logger.error(
+        { packageName, error: error?.message || String(error) },
+        'Failed to save packument for @{packageName}: @{error}'
+      );
+      throw error;
+    }
   }
 
   /**
