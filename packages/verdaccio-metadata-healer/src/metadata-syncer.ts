@@ -1,6 +1,6 @@
 import { Logger, Manifest } from '@verdaccio/types';
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import { join, dirname } from 'path';
+import { readFile } from 'fs/promises';
+import { join } from 'path';
 import pacote from 'pacote';
 import { HealerConfig } from './types';
 
@@ -13,6 +13,24 @@ export interface SyncResult {
   versionsCount: number;
   distTags: Record<string, string>;
   error?: string;
+}
+
+/**
+ * 已从远端获取、与本地数据合并并规范化，但尚未持久化的包元数据。
+ */
+export interface PreparedPackage {
+  packageName: string;
+  manifest: Manifest;
+  versionsCount: number;
+  distTags: Record<string, string>;
+}
+
+/**
+ * 旧同步 API 的兼容结果。该 API 仅准备元数据，因此 persisted 始终为 false。
+ */
+export interface PreparationSyncResult extends SyncResult {
+  persisted: false;
+  manifest?: Manifest;
 }
 
 /**
@@ -118,54 +136,12 @@ export class MetadataSyncer {
   }
 
   /**
-   * 保存元数据到本地
+   * 获取远端元数据并与本地信息合并。此方法不执行持久化。
    */
-  async saveMetadata(packageName: string, metadata: Manifest): Promise<void> {
-    const packagePath = this.getPackagePath(packageName);
-    const metadataPath = join(packagePath, 'package.json');
-
-    // 确保目录存在
-    await mkdir(dirname(metadataPath), { recursive: true });
-
-    // 记录保存的元数据信息
-    const versionsCount = Object.keys(metadata.versions || {}).length;
-    const distTags = metadata['dist-tags'] || {};
-
-    this.logger.info(
-      {
-        packageName,
-        path: metadataPath,
-        versions: versionsCount,
-        latest: distTags.latest,
-        tags: Object.keys(distTags).join(', ')
-      },
-      '[MetadataSyncer] Saving metadata for @{packageName} to @{path} with @{versions} versions, latest: @{latest}'
-    );
-
-    const distfilesBackfilled = this.ensureDistfiles(metadata);
-    if (distfilesBackfilled > 0) {
-      this.logger.debug(
-        { packageName, distfilesBackfilled },
-        '[MetadataSyncer] Backfilled @{distfilesBackfilled} _distfiles entries for @{packageName}'
-      );
-    }
-
-    await writeFile(metadataPath, JSON.stringify(metadata, null, 2));
-
-    this.logger.info(
-      { packageName, path: metadataPath },
-      '[MetadataSyncer] Saved metadata for @{packageName} to @{path}'
-    );
-  }
-
-  /**
-   * 同步单个包的元数据
-   * 从远端获取最新元数据，合并本地信息，然后保存
-   */
-  async syncPackage(packageName: string): Promise<SyncResult> {
+  async preparePackage(packageName: string): Promise<PreparedPackage> {
     this.logger.info(
       { packageName, storagePath: this.storagePath },
-      '[MetadataSyncer] Starting sync for @{packageName}, storage: @{storagePath}'
+      '[MetadataSyncer] Preparing @{packageName}, storage: @{storagePath}'
     );
 
     try {
@@ -178,27 +154,43 @@ export class MetadataSyncer {
       // 3. 合并元数据
       const mergedMetadata = this.mergeMetadata(localMetadata, remoteMetadata);
 
-      // 4. 保存到本地
-      await this.saveMetadata(packageName, mergedMetadata);
-
       return {
-        success: true,
         packageName,
+        manifest: mergedMetadata,
         versionsCount: Object.keys(mergedMetadata.versions || {}).length,
         distTags: mergedMetadata['dist-tags'] || {}
       };
     } catch (error: any) {
       this.logger.error(
         { packageName, error: error.message, stack: error.stack },
-        '[MetadataSyncer] Failed to sync @{packageName}: @{error}'
+        '[MetadataSyncer] Failed to prepare @{packageName}: @{error}'
       );
+      throw error;
+    }
+  }
 
+  /**
+   * @deprecated 使用 preparePackage；保留 SyncResult 成功/失败语义，但不执行持久化。
+   */
+  async syncPackage(packageName: string): Promise<PreparationSyncResult> {
+    try {
+      const prepared = await this.preparePackage(packageName);
+      return {
+        success: true,
+        packageName: prepared.packageName,
+        versionsCount: prepared.versionsCount,
+        distTags: prepared.distTags,
+        manifest: prepared.manifest,
+        persisted: false
+      };
+    } catch (error: any) {
       return {
         success: false,
         packageName,
         versionsCount: 0,
         distTags: {},
-        error: error.message
+        error: error?.message || String(error),
+        persisted: false
       };
     }
   }
@@ -207,51 +199,70 @@ export class MetadataSyncer {
    * 合并本地和远端元数据
    * 远端元数据优先，但保留本地的 _uplinks 等信息
    */
-  private mergeMetadata(
+  mergeMetadata(
     local: Manifest | null,
     remote: Manifest
   ): Manifest {
-    if (!local) {
-      this.ensureDistfiles(remote);
-      return remote;
-    }
-
-    // 使用远端元数据作为基础
-    const merged = { ...remote };
-
-    // 保留本地的 _uplinks 信息（用于缓存控制）
-    if (local._uplinks) {
-      merged._uplinks = local._uplinks;
-    }
-
-    // 保留本地的 _attachments 信息
-    if (local._attachments) {
-      merged._attachments = {
-        ...merged._attachments,
-        ...local._attachments
-      };
-    }
-
-    // 保留本地 _distfiles，避免覆盖后 tarball 回源失败
-    if ((local as any)._distfiles) {
-      (merged as any)._distfiles = {
-        ...((merged as any)._distfiles || {}),
-        ...((local as any)._distfiles || {})
-      };
-    }
-
-    // 更新 _uplinks 的 fetched 时间
-    if (!merged._uplinks) {
-      merged._uplinks = {};
-    }
-    merged._uplinks['synced'] = {
-      etag: '',
-      fetched: Date.now()
+    const localManifest = (local || {
+      name: remote.name,
+      versions: {},
+      'dist-tags': {}
+    }) as any;
+    const remoteManifest = remote as any;
+    const distfiles: Record<string, any> = {
+      ...this.asMap(remoteManifest._distfiles)
     };
 
-    this.ensureDistfiles(merged);
+    for (const version of Object.values(this.asMap(remoteManifest.versions))) {
+      const dist = this.asMap(this.asMap(version).dist);
+      const filename = this.extractFilenameFromTarballUrl(dist.tarball);
+      if (!filename) {
+        continue;
+      }
 
-    return merged;
+      const record: Record<string, any> = {
+        ...this.asMap(distfiles[filename]),
+        url: dist.tarball
+      };
+      if (typeof dist.shasum === 'string' && dist.shasum.length > 0) {
+        record.sha = dist.shasum;
+      }
+      distfiles[filename] = record;
+    }
+
+    const merged = {
+      ...localManifest,
+      ...remoteManifest,
+      versions: {
+        ...this.asMap(localManifest.versions),
+        ...this.asMap(remoteManifest.versions)
+      },
+      _attachments: {
+        ...this.asMap(localManifest._attachments),
+        ...this.asMap(remoteManifest._attachments)
+      },
+      _distfiles: {
+        ...distfiles,
+        ...this.asMap(localManifest._distfiles)
+      },
+      _uplinks: {
+        ...this.asMap(remoteManifest._uplinks),
+        ...this.asMap(localManifest._uplinks)
+      }
+    } as Manifest;
+
+    if (this.isValidLocalIdentity(localManifest._rev)) {
+      (merged as any)._rev = localManifest._rev;
+    } else {
+      delete (merged as any)._rev;
+    }
+    if (this.isValidLocalIdentity(localManifest._id)) {
+      (merged as any)._id = localManifest._id;
+    } else {
+      delete (merged as any)._id;
+    }
+
+    return this.normalizeManifest(merged);
   }
 
   /**
@@ -261,56 +272,35 @@ export class MetadataSyncer {
     return join(this.storagePath, packageName);
   }
 
-  private ensureDistfiles(metadata: Manifest): number {
-    const raw = metadata as any;
-    if (!raw.versions || typeof raw.versions !== 'object') {
-      return 0;
+  private normalizeManifest(manifest: Manifest): Manifest {
+    const raw = manifest as any;
+    for (const field of [
+      'versions',
+      'dist-tags',
+      '_attachments',
+      '_distfiles',
+      '_uplinks',
+      'time'
+    ]) {
+      raw[field] = this.asMap(raw[field]);
     }
-    if (!raw._distfiles || typeof raw._distfiles !== 'object') {
-      raw._distfiles = {};
-    }
-
-    const distfiles = raw._distfiles as Record<string, any>;
-    let backfilled = 0;
-
-    for (const versionMeta of Object.values(raw.versions as Record<string, any>)) {
-      const tarball = versionMeta?.dist?.tarball;
-      if (typeof tarball !== 'string' || tarball.length === 0) {
-        continue;
-      }
-
-      const filename = this.extractFilenameFromTarballUrl(tarball);
-      if (!filename) {
-        continue;
-      }
-
-      const shasum = versionMeta?.dist?.shasum;
-      const current = distfiles[filename];
-      if (!current || typeof current !== 'object') {
-        distfiles[filename] = {
-          url: tarball,
-          ...(typeof shasum === 'string' && shasum.length > 0 ? { sha: shasum } : {})
-        };
-        backfilled++;
-        continue;
-      }
-
-      if (typeof current.url !== 'string' || current.url.length === 0) {
-        current.url = tarball;
-      }
-      if (
-        (typeof current.sha !== 'string' || current.sha.length === 0) &&
-        typeof shasum === 'string' &&
-        shasum.length > 0
-      ) {
-        current.sha = shasum;
-      }
-    }
-
-    return backfilled;
+    return manifest;
   }
 
-  private extractFilenameFromTarballUrl(tarball: string): string | null {
+  private asMap(value: unknown): Record<string, any> {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, any>
+      : {};
+  }
+
+  private isValidLocalIdentity(value: unknown): value is string {
+    return typeof value === 'string' && value.length > 0;
+  }
+
+  private extractFilenameFromTarballUrl(tarball: unknown): string | null {
+    if (typeof tarball !== 'string' || tarball.length === 0) {
+      return null;
+    }
     const clean = tarball.split('?')[0].split('#')[0];
     const lastSlash = clean.lastIndexOf('/');
     const filename = lastSlash >= 0 ? clean.substring(lastSlash + 1) : clean;
@@ -321,17 +311,45 @@ export class MetadataSyncer {
   }
 
   /**
-   * 批量同步多个包的元数据
+   * 批量准备多个包的元数据，不执行持久化。
    */
-  async syncPackages(
+  async preparePackages(
     packageNames: string[],
     onProgress?: (current: number, total: number, packageName: string) => void
-  ): Promise<SyncResult[]> {
+  ): Promise<PreparedPackage[]> {
     if (packageNames.length === 0) {
       return [];
     }
 
     // 保持输入顺序，同时去重，避免重复同步同一个包
+    const uniqueNames = Array.from(new Set(packageNames));
+    const total = uniqueNames.length;
+    const concurrency = this.getSyncConcurrency();
+    let completed = 0;
+
+    return this.mapWithConcurrency(uniqueNames, concurrency, async (packageName) => {
+      const result = await this.preparePackage(packageName);
+      completed++;
+
+      if (onProgress) {
+        onProgress(completed, total, packageName);
+      }
+
+      return result;
+    });
+  }
+
+  /**
+   * @deprecated 使用 preparePackages；保留 SyncResult 数组语义，但不执行持久化。
+   */
+  async syncPackages(
+    packageNames: string[],
+    onProgress?: (current: number, total: number, packageName: string) => void
+  ): Promise<PreparationSyncResult[]> {
+    if (packageNames.length === 0) {
+      return [];
+    }
+
     const uniqueNames = Array.from(new Set(packageNames));
     const total = uniqueNames.length;
     const concurrency = this.getSyncConcurrency();

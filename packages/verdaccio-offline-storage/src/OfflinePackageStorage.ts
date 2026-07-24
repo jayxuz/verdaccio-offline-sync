@@ -1,10 +1,11 @@
-import { existsSync, readdirSync, createReadStream } from 'fs';
-import { readdir, stat, unlink } from 'fs/promises';
+import { existsSync, readdirSync, createReadStream, watch, type FSWatcher } from 'fs';
+import { readFile, readdir, stat, unlink } from 'fs/promises';
 import { createHash } from 'crypto';
-import { basename, dirname, join } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import semver from 'semver';
 import { Logger, Manifest, Callback } from '@verdaccio/types';
 import { OfflineStorageConfig } from './types';
+import { mergeLocalManifests, normalizeLocalManifest } from './manifest-utils';
 
 // Import LocalFS from @verdaccio/local-storage-legacy
 // Verdaccio 6.x uses local-storage-legacy package
@@ -33,6 +34,12 @@ try {
 export class OfflinePackageStorage extends LocalFS {
   private config: OfflineStorageConfig;
   protected logger: Logger;
+  private static upsertQueues = new Map<string, Array<{
+    storage: OfflinePackageStorage;
+    name: string;
+    incoming: Manifest;
+    callback: Callback;
+  }>>();
 
   constructor(path: string, logger: Logger, config: OfflineStorageConfig) {
     super(path, logger);
@@ -51,8 +58,9 @@ export class OfflinePackageStorage extends LocalFS {
    * 重写此方法以添加调试日志，跟踪元数据保存操作
    */
   savePackage(name: string, value: Manifest, cb: Callback): void {
-    const versionCount = Object.keys(value.versions || {}).length;
-    const distTags = value['dist-tags'] || {};
+    const normalized = normalizeLocalManifest(value);
+    const versionCount = Object.keys(normalized.versions).length;
+    const distTags = normalized['dist-tags'];
 
     // 使用 warn 级别确保日志可见
     this.logger.warn(
@@ -66,7 +74,7 @@ export class OfflinePackageStorage extends LocalFS {
     );
 
     // 调用父类方法保存元数据
-    super.savePackage(name, value, (err: any) => {
+    super.savePackage(name, normalized, (err: any) => {
       if (err) {
         this.logger.error(
           { packageName: name, error: err.message },
@@ -102,16 +110,18 @@ export class OfflinePackageStorage extends LocalFS {
     super.updatePackage(
       name,
       (data: Manifest, cb: Callback) => {
-        const beforeVersions = Object.keys(data.versions || {}).length;
+        const normalized = normalizeLocalManifest(data);
+        const beforeVersions = Object.keys(normalized.versions).length;
         this.logger.debug(
           { packageName: name, versions: beforeVersions },
           '[verdaccio-offline-storage/updatePackage] Before update: @{packageName} has @{versions} versions'
         );
-        updateHandler(data, cb);
+        updateHandler(normalized, cb);
       },
       (pkgName: string, data: Manifest, cb: Callback) => {
-        const versionCount = Object.keys(data.versions || {}).length;
-        const distTags = data['dist-tags'] || {};
+        const normalized = normalizeLocalManifest(data);
+        const versionCount = Object.keys(normalized.versions).length;
+        const distTags = normalized['dist-tags'];
         this.logger.info(
           {
             packageName: pkgName,
@@ -120,7 +130,7 @@ export class OfflinePackageStorage extends LocalFS {
           },
           '[verdaccio-offline-storage/updatePackage] Writing package @{packageName} with @{versions} versions, latest: @{latest}'
         );
-        onWrite(pkgName, data, cb);
+        onWrite(pkgName, normalized, cb);
       },
       transformPackage,
       (err: any) => {
@@ -138,6 +148,222 @@ export class OfflinePackageStorage extends LocalFS {
         onEnd(err);
       }
     );
+  }
+
+  /**
+   * Merge and persist package metadata while reusing the legacy storage lock.
+   */
+  upsertPackage(name: string, incoming: Manifest, cb: Callback): void {
+    const callback = this.once(cb);
+    const queueKey = resolve(this.path, 'package.json');
+    const queue = OfflinePackageStorage.upsertQueues.get(queueKey);
+    if (queue) {
+      queue.push({ storage: this, name, incoming, callback });
+      return;
+    }
+
+    OfflinePackageStorage.upsertQueues.set(queueKey, [{
+      storage: this,
+      name,
+      incoming,
+      callback
+    }]);
+    OfflinePackageStorage.processNextUpsert(queueKey);
+  }
+
+  private static processNextUpsert(queueKey: string): void {
+    const queue = OfflinePackageStorage.upsertQueues.get(queueKey);
+    const pending = queue?.[0];
+    if (!queue || !pending) {
+      OfflinePackageStorage.upsertQueues.delete(queueKey);
+      return;
+    }
+
+    pending.storage.performUpsert(
+      pending.name,
+      pending.incoming,
+      pending.storage.once((error?: Error | null) => {
+        queue.shift();
+        if (queue.length === 0) {
+          OfflinePackageStorage.upsertQueues.delete(queueKey);
+        }
+        try {
+          pending.callback(error || null);
+        } finally {
+          if (queue.length > 0) {
+            OfflinePackageStorage.processNextUpsert(queueKey);
+          }
+        }
+      })
+    );
+  }
+
+  private performUpsert(name: string, incoming: Manifest, callback: Callback): void {
+    this.updateExistingPackage(name, incoming, this.once((updateError?: Error | null) => {
+      if (!updateError) {
+        callback(null);
+        return;
+      }
+
+      if (!this.isNotFoundError(updateError)) {
+        callback(updateError);
+        return;
+      }
+
+      const initial = mergeLocalManifests({
+        name: incoming.name || name,
+        versions: {},
+        'dist-tags': {}
+      } as Manifest, incoming);
+
+      super.createPackage(name, initial, this.once((createError?: Error | null) => {
+        if (!createError) {
+          callback(null);
+          return;
+        }
+
+        if (!this.isAlreadyExistsError(createError)) {
+          callback(createError);
+          return;
+        }
+
+        this.waitForPackageReady(this.once((readyError?: Error | null) => {
+          if (readyError) {
+            callback(readyError);
+            return;
+          }
+
+          this.updateExistingPackage(name, incoming, callback);
+        }));
+      }));
+    }));
+  }
+
+  private updateExistingPackage(name: string, incoming: Manifest, cb: Callback): void {
+    super.updatePackage(
+      name,
+      (local: Manifest, updateCallback: Callback) => {
+        try {
+          const merged = mergeLocalManifests(local, incoming);
+          Object.assign(local, merged);
+          for (const field of ['_rev', '_id'] as const) {
+            if (!Object.prototype.hasOwnProperty.call(merged, field)) {
+              delete (local as any)[field];
+            }
+          }
+          updateCallback(null);
+        } catch (error) {
+          updateCallback(error as Error);
+        }
+      },
+      (packageName: string, data: Manifest, writeCallback: Callback) => {
+        super.savePackage(packageName, normalizeLocalManifest(data), writeCallback);
+      },
+      (data: Manifest) => normalizeLocalManifest(data),
+      this.once(cb)
+    );
+  }
+
+  private waitForPackageReady(cb: Callback): void {
+    const callback = this.once(cb);
+    const packagePath = join(this.path, 'package.json');
+    let checking = false;
+    let checkAgain = false;
+    let watcher: FSWatcher | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+
+    const finish = (error?: Error | null) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      if (retryTimer) clearTimeout(retryTimer);
+      watcher?.close();
+      callback(error || null);
+    };
+    const check = async () => {
+      if (settled) return;
+      if (checking) {
+        checkAgain = true;
+        return;
+      }
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+      checking = true;
+      try {
+        const manifest = JSON.parse(await readFile(packagePath, 'utf8'));
+        if (
+          manifest &&
+          typeof manifest === 'object' &&
+          !Array.isArray(manifest) &&
+          typeof manifest.name === 'string' &&
+          manifest.name.length > 0 &&
+          manifest.versions &&
+          typeof manifest.versions === 'object' &&
+          !Array.isArray(manifest.versions) &&
+          manifest['dist-tags'] &&
+          typeof manifest['dist-tags'] === 'object' &&
+          !Array.isArray(manifest['dist-tags'])
+        ) {
+          finish(null);
+          return;
+        }
+      } catch (error: any) {
+        if (error?.code && error.code !== 'ENOENT') {
+          finish(error);
+          return;
+        }
+      } finally {
+        checking = false;
+      }
+      if (settled) return;
+      if (checkAgain) {
+        checkAgain = false;
+        void check();
+      } else {
+        retryTimer = setTimeout(() => {
+          retryTimer = undefined;
+          void check();
+        }, 10);
+      }
+    };
+
+    try {
+      watcher = watch(this.path, (_event: string, filename: string | Buffer | null) => {
+        if (!filename || filename.toString() === 'package.json') {
+          void check();
+        }
+      });
+      watcher.once('error', finish);
+      timeout = setTimeout(() => {
+        finish(Object.assign(new Error('package metadata did not become ready'), {
+          code: 'ETIMEDOUT'
+        }));
+      }, 5000);
+      void check();
+    } catch (error) {
+      finish(error as Error);
+    }
+  }
+
+  private once(callback: Callback): Callback {
+    let called = false;
+    return (...args: any[]) => {
+      if (called) return;
+      called = true;
+      callback(...args);
+    };
+  }
+
+  private isNotFoundError(error: any): boolean {
+    return error?.code === 'ENOENT' || error?.status === 404 || error?.statusCode === 404;
+  }
+
+  private isAlreadyExistsError(error: any): boolean {
+    return error?.code === 'EEXIST' || error?.code === 'EEXISTS';
   }
 
   /**
@@ -191,6 +417,7 @@ export class OfflinePackageStorage extends LocalFS {
       }
 
       try {
+        normalizeLocalManifest(data);
         this.logger.debug(
           { packageName: name },
           '[verdaccio-offline-storage/readPackage] Discovering local versions for package: @{packageName}'

@@ -119,101 +119,163 @@ npm install -g verdaccio-ingest-middleware
 npm install -g verdaccio-metadata-healer
 ```
 
-### 配置外网 Verdaccio
+### 在线与离线配置角色
+
+在线代理缓存与离线消费/导入是两个互斥的部署角色：
+
+- **在线侧**配置 uplink 和 `packages.proxy`，由 `ingest-middleware` 从上游分析、下载并导出缓存；`offline-storage` 必须设置为 `offline: false`。
+- **离线侧**不配置 uplink、proxy 或 `ingest-middleware`，由 `offline-storage` 在 `offline: true` 下只解析本地包，并保留 `metadata-healer` filter 修复元数据。离线示例完全不声明 `middlewares`，因此不会注册导入路由。
+
+不要在同一个 Verdaccio 实例中同时启用 ingest 与 healer。ingest 依赖上游并负责写入在线缓存，healer 面向隔离存储并可能修复或导入元数据；两者同时操作同一 storage 会混淆网络边界和数据所有权，并引入并发写入、错误回源或把未验证数据再次导出的风险。请使用独立实例或至少独立配置与 storage。
+
+- 在线侧完整示例：[examples/config-online.yaml](./examples/config-online.yaml)
+- 离线侧完整示例：[examples/config-offline.yaml](./examples/config-offline.yaml)
+
+两个示例中的 `access`/`publish` 规则只为说明结构。部署时必须保留并审查生产环境现有访问控制，不要用示例权限覆盖生产配置。示例使用相对 storage 路径，实际部署请根据 Verdaccio 运行目录或容器挂载调整。
+
+真实实现只有在 `middlewares.metadata-healer.enableImportUI` 为 `true` 时才注册导入路由；通用的 `enabled: false` 不能作为这里的保护。确实需要 Web UI 导入差分包时，才在离线配置中显式新增：
 
 ```yaml
-# config-external.yaml
-storage: /verdaccio/storage/data
-
-store:
-  '@jayxuz/verdaccio-offline-storage':
-    offline: false
-    verifyChecksum: true
-    minTarballSize: 128
-
-uplinks:
-  npmjs:
-    url: https://registry.npmmirror.com
-
-packages:
-  '@*/*':
-    access: $all
-    publish: $authenticated
-    proxy: npmjs
-  '**':
-    access: $all
-    publish: $authenticated
-    proxy: npmjs
-
-middlewares:
-  ingest-middleware:
-    enabled: true
-    upstreamRegistry: https://registry.npmmirror.com
-    # 并发处理数（下载/扫描/分析/导出链路，默认：5）
-    concurrency: 5
-    timeout: 60000
-    # tarball 完整性校验（默认 true，下载后对比 SHA-1）
-    verifyChecksum: true
-    # tarball 最小体积字节数，低于此值视为损坏（默认 128）
-    minTarballSize: 128
-    platforms:
-      - os: linux
-        arch: x64
-        libc: glibc
-      - os: linux
-        arch: arm64
-        libc: glibc
-      - os: win32
-        arch: x64
-      - os: win32
-        arch: arm64
-    sync:
-      refreshAllMetadataBeforeAnalyze: false
-      updateToLatest: false
-      completeSiblingVersions: false
-      includeDev: false
-      includePeer: true
-      includeOptional: true
-      maxDepth: 10
-```
-
-### 配置内网 Verdaccio
-
-```yaml
-# config-internal.yaml
-storage: /verdaccio/storage/data
-
-store:
-  '@jayxuz/verdaccio-offline-storage':
-    offline: true  # 强制离线模式
-    # 校验本地 tarball SHA-1 是否与 metadata 一致（默认 true）
-    verifyChecksum: true
-    # tarball 最小体积字节数，低于此值视为损坏（默认 128）
-    minTarballSize: 128
-
-packages:
-  '@*/*':
-    access: $all
-    publish: $authenticated
-  '**':
-    access: $all
-    publish: $authenticated
-
-filters:
-  metadata-healer:
-    enabled: true
-    # 批量元数据同步并发数（默认：5）
-    syncConcurrency: 5
-    scanCacheTTL: 60000
-    shasumCacheSize: 10000
-    autoUpdateLatest: true
-
-# 启用导入中间件（可选，用于 Web UI 导入差分包）
 middlewares:
   metadata-healer:
-    enabled: true
     enableImportUI: true
 ```
+
+修改配置后可先运行以下人工核对辅助命令：
+
+```bash
+rg -n "ingest-middleware|metadata-healer|offline:|proxy:" examples/config-*.yaml
+```
+
+辅助输出仍需人工解释；需要可复制、以退出码表示成功或失败的断言时，运行：
+
+```bash
+set -eu
+! rg -n 'metadata-healer' examples/config-online.yaml
+! rg -n 'ingest-middleware|proxy:|^uplinks:|^middlewares:' examples/config-offline.yaml
+test "$(rg -c '^    offline: false$' examples/config-online.yaml)" -eq 1
+test "$(rg -c '^    offline: true$' examples/config-offline.yaml)" -eq 1
+test "$(rg -c '^    proxy: npmjs$' examples/config-online.yaml)" -eq 2
+test "$(rg -c '^  metadata-healer:$' examples/config-offline.yaml)" -eq 1
+```
+
+验收规则：在线配置只能出现 `ingest-middleware`，必须是 `offline: false`，并为两类包规则设置 `proxy`；离线配置只能出现 filter 下的 `metadata-healer`，必须是 `offline: true`，且不能含 uplink、任何 middleware 或任何 `proxy`。
+
+### 存储清单迁移与回滚
+
+仓库提供 `scripts/repair-storage-manifests.mjs`，用于补齐历史 `package.json` 中的 `_attachments` 与 `dist` 文件名。以下路径都是占位示例，运行前必须替换为本机绝对路径；storage 与 backup 不能相同，backup 也不能位于 storage 内。
+
+先执行只读 dry-run，并用 `jq` 检查报告：
+
+```bash
+# 必须替换为本机实际路径。
+REPO_ROOT=/absolute/path/to/verdaccio-offline-sync
+STORAGE_DIR=/absolute/path/to/verdaccio/storage/data
+DRY_RUN_REPORT=/tmp/verdaccio-manifest-dry-run.json
+
+node "$REPO_ROOT/scripts/repair-storage-manifests.mjs" \
+  --storage "$STORAGE_DIR" | tee "$DRY_RUN_REPORT"
+jq -e '.fileErrors == 0 and .parseErrors == 0' "$DRY_RUN_REPORT"
+```
+
+确认 dry-run 的范围和错误数后再 apply。**apply 前必须停止所有读写该 storage 的 Verdaccio 实例或容器**，并提供 storage 外部的绝对 backup 目录：
+
+```bash
+# 必须替换为本机实际路径；BACKUP_DIR 应是专用于本次迁移的新目录。
+APPLY_REPORT=/tmp/verdaccio-manifest-apply.json
+BACKUP_DIR=/absolute/path/outside-storage/manifest-backup-YYYYMMDD
+
+node "$REPO_ROOT/scripts/repair-storage-manifests.mjs" \
+  --storage "$STORAGE_DIR" \
+  --apply \
+  --backup-dir "$BACKUP_DIR" | tee "$APPLY_REPORT"
+jq -e '.fileErrors == 0 and .parseErrors == 0 and .modified == .backups' \
+  "$APPLY_REPORT"
+```
+
+本次已完成迁移的校验摘要如下，证据来自本次任务的终端输出与发布记录，仅用于追溯本次执行，不是未来运行的硬编码期望值；后续迁移应以当次 dry-run/apply 报告为准：
+
+| 指标 | 本次记录 |
+|------|---------:|
+| dry-run/apply `scan` | 10478 |
+| dry-run `wouldModify` | 5842 |
+| dry-run `missingAttachments` | 1436 |
+| dry-run `missingDistfiles` | 5574 |
+| dry-run `parseErrors` | 0 |
+| dry-run `backfilledDistfiles` | 721518 |
+| apply `modified` | 5842 |
+| apply `backups` | 5842 |
+| apply `fileErrors` | 0 |
+| post-scan `wouldModify` | 0 |
+| post-scan `missingAttachments` | 0 |
+| post-scan `missingDistfiles` | 0 |
+| post-scan `parseErrors` | 0 |
+
+apply 后、重新启动 Verdaccio 前，再次 dry-run 复扫并用 `jq` 验收；同时可让 `jq` 逐个解析所有清单：
+
+```bash
+POST_REPORT=/tmp/verdaccio-manifest-post-scan.json
+node "$REPO_ROOT/scripts/repair-storage-manifests.mjs" \
+  --storage "$STORAGE_DIR" | tee "$POST_REPORT"
+jq -e '.wouldModify == 0 and .parseErrors == 0 and .fileErrors == 0' "$POST_REPORT"
+find "$STORAGE_DIR" -type f -name package.json -exec jq -e empty {} +
+```
+
+如果需要回滚，先再次停止 Verdaccio。备份目录保持与 storage 相同的相对目录结构，因此只按相对路径还原备份的 `package.json`，不要恢复整个 storage 卷，也不要覆盖或删除 `.tgz`。
+
+先运行以下只读检查，确认两个目录都能规范化为已存在的绝对目录、互不嵌套，并人工抽查待还原文件列表：
+
+```bash
+(
+  set -eu
+  backup_real=$(realpath -e -- "$BACKUP_DIR")
+  storage_real=$(realpath -e -- "$STORAGE_DIR")
+  [ -d "$backup_real" ] && [ -d "$storage_real" ]
+  [ "$backup_real" != / ] && [ "$storage_real" != / ]
+  case "$backup_real" in
+    "$storage_real"|"$storage_real"/*)
+      echo '拒绝回滚：backup 与 storage 相同或位于 storage 内' >&2
+      exit 1
+      ;;
+  esac
+  case "$storage_real" in
+    "$backup_real"|"$backup_real"/*)
+      echo '拒绝回滚：storage 位于 backup 内' >&2
+      exit 1
+      ;;
+  esac
+  find "$backup_real" -type f -name package.json -print
+)
+```
+
+确认列表只包含本次备份的目标清单后，再运行还原命令：
+
+```bash
+(
+  set -eu
+  backup_real=$(realpath -e -- "$BACKUP_DIR")
+  storage_real=$(realpath -e -- "$STORAGE_DIR")
+  [ -d "$backup_real" ] && [ -d "$storage_real" ]
+  [ "$backup_real" != / ] && [ "$storage_real" != / ]
+  case "$backup_real" in
+    "$storage_real"|"$storage_real"/*)
+      echo '拒绝回滚：backup 与 storage 相同或位于 storage 内' >&2
+      exit 1
+      ;;
+  esac
+  case "$storage_real" in
+    "$backup_real"|"$backup_real"/*)
+      echo '拒绝回滚：storage 位于 backup 内' >&2
+      exit 1
+      ;;
+  esac
+  cd -- "$backup_real" &&
+    find . -type f -name package.json -print0 \
+      | xargs -0 -r cp --archive --parents --target-directory="$storage_real" --
+)
+```
+
+回滚后重复执行 dry-run 与 `jq` 检查，再决定是否重新启动服务。原始生产报告按要求与生产 storage、backup 一起存放在仓库外，不得加入 Git；README 只保留上述校验摘要。所有生产数据应按组织的数据保护和保留策略管理。
 
 ## Web UI 使用指南
 

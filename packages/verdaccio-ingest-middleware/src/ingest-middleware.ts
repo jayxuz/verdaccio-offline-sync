@@ -32,6 +32,37 @@ import {
   ExportProgress
 } from './types';
 
+interface PackageOperationFailure {
+  packageName: string;
+  error: unknown;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+class PackageOperationBatchError extends Error {
+  readonly failures: PackageOperationFailure[];
+
+  constructor(operation: string, failures: PackageOperationFailure[]) {
+    const details = failures
+      .map(({ packageName, error }) => `${packageName}: ${getErrorMessage(error)}`)
+      .join('; ');
+    super(`${operation} failed for ${failures.length} package(s): ${details}`);
+    this.name = 'PackageOperationBatchError';
+    this.failures = failures;
+  }
+}
+
+function throwIfPackageOperationFailed(
+  operation: string,
+  failures: PackageOperationFailure[]
+): void {
+  if (failures.length > 0) {
+    throw new PackageOperationBatchError(operation, failures);
+  }
+}
+
 /**
  * Verdaccio 摄取中间件插件
  * 用于外网环境下递归下载 npm 包及其依赖
@@ -85,7 +116,12 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
   register_middlewares(app: Express, auth: any, storage: any): void {
     // 初始化扫描器和下载器
     this.scanner = new StorageScanner(this.config as IngestConfig, this.storagePath, this.logger);
-    this.downloader = new PackageDownloader(this.config as IngestConfig, this.storagePath, this.logger);
+    this.downloader = new PackageDownloader(
+      this.config as IngestConfig,
+      this.storagePath,
+      this.logger,
+      storage
+    );
     // 初始化差分导出相关
     const concurrency = (this.config as IngestConfig).concurrency || 5;
     this.diffScanner = new DifferentialScanner(this.storagePath, this.logger, concurrency);
@@ -1014,6 +1050,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     let completed = 0;
     let saved = 0;
     const total = uniqueNames.length;
+    const failures: PackageOperationFailure[] = [];
 
     await Promise.all(
       uniqueNames.map((packageName) =>
@@ -1032,8 +1069,9 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
               );
             }
           } catch (error: any) {
+            failures.push({ packageName, error });
             this.logger.warn(
-              { name: packageName, error: error.message },
+              { name: packageName, error: getErrorMessage(error) },
               'Failed to save targeted packument for @{name}: @{error}'
             );
           } finally {
@@ -1046,6 +1084,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       )
     );
 
+    throwIfPackageOperationFailed('Targeted packument persistence', failures);
     return saved;
   }
 
@@ -1062,6 +1101,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     let completed = 0;
     let saved = 0;
     const total = uniqueNames.length;
+    const failures: PackageOperationFailure[] = [];
 
     await Promise.all(
       uniqueNames.map((packageName) =>
@@ -1079,8 +1119,9 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
               );
             }
           } catch (error: any) {
+            failures.push({ packageName, error });
             this.logger.warn(
-              { name: packageName, error: error.message },
+              { name: packageName, error: getErrorMessage(error) },
               'Failed to save packument for @{name}: @{error}'
             );
           } finally {
@@ -1093,6 +1134,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       )
     );
 
+    throwIfPackageOperationFailed('Packument persistence', failures);
     return saved;
   }
 
@@ -1282,6 +1324,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       let tagsUpdated = 0;
       let created = 0;
       let distfilesBackfilled = 0;
+      const failures: PackageOperationFailure[] = [];
 
       // 2. 对每个包重建元数据
       for (const pkg of packages) {
@@ -1356,12 +1399,15 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
             }
           }
         } catch (err: any) {
+          failures.push({ packageName: pkg.name, error: err });
           this.logger.warn(
-            { name: pkg.name, error: err.message },
+            { name: pkg.name, error: getErrorMessage(err) },
             'Failed to rebuild index for @{name}: @{error}'
           );
         }
       }
+
+      throwIfPackageOperationFailed('Index rebuild', failures);
 
       this.logger.info(
         { scanned: packages.length, healed, tagsUpdated, created, distfilesBackfilled },

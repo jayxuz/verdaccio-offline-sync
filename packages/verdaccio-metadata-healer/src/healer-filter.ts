@@ -217,6 +217,14 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
    * 只有当远端数据比本地数据更新时才保存
    */
   private saveMetadataAsync(packageName: string, manifest: Manifest): void {
+    if (!this.verdaccioStorage) {
+      this.logger.warn(
+        { packageName },
+        '[filter_metadata] Metadata for @{packageName} was healed but not persisted because middleware storage is unavailable'
+      );
+      return;
+    }
+
     // 异步执行，不阻塞返回
     setImmediate(async () => {
       try {
@@ -253,7 +261,8 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
           return;
         }
 
-        await this.syncer.saveMetadata(packageName, manifest);
+        const mergedMetadata = this.syncer.mergeMetadata(localMetadata, manifest);
+        await this.saveMetadataViaStorage(packageName, mergedMetadata);
         this.logger.info(
           { packageName },
           '[filter_metadata] Auto-saved metadata for @{packageName}'
@@ -272,31 +281,20 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
    * 这个方法使用 Verdaccio 内部的存储机制，可以绕过文件权限问题
    */
   private async saveMetadataViaStorage(packageName: string, metadata: Manifest): Promise<void> {
-    if (!this.verdaccioStorage) {
-      this.logger.warn(
-        { packageName },
-        '[saveMetadataViaStorage] Verdaccio storage not available, falling back to direct file write'
-      );
-      await this.syncer.saveMetadata(packageName, metadata);
-      return;
-    }
-
     try {
       // 获取包的存储实例
-      const packageStorage = this.verdaccioStorage.localStorage._getLocalStorage(packageName);
+      const getPackageStorage = this.verdaccioStorage?.localStorage?._getLocalStorage;
+      const packageStorage = typeof getPackageStorage === 'function'
+        ? getPackageStorage.call(this.verdaccioStorage.localStorage, packageName)
+        : undefined;
 
-      if (!packageStorage) {
-        this.logger.warn(
-          { packageName },
-          '[saveMetadataViaStorage] Package storage not found for @{packageName}, falling back to direct file write'
-        );
-        await this.syncer.saveMetadata(packageName, metadata);
-        return;
+      if (!packageStorage || typeof packageStorage.upsertPackage !== 'function') {
+        throw new Error(`Package storage for ${packageName} does not support upsertPackage`);
       }
 
-      // 使用 Verdaccio 的 savePackage 方法保存元数据
+      // 使用 offline-storage 的锁内 upsert 保存元数据
       await new Promise<void>((resolve, reject) => {
-        packageStorage.savePackage(packageName, metadata, (err: any) => {
+        packageStorage.upsertPackage(packageName, metadata, (err: any) => {
           if (err) {
             reject(err);
           } else {
@@ -307,15 +305,14 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
 
       this.logger.info(
         { packageName },
-        '[saveMetadataViaStorage] Saved metadata for @{packageName} via Verdaccio storage API'
+        '[saveMetadataViaStorage] Upserted metadata for @{packageName} via Verdaccio storage API'
       );
     } catch (error: any) {
       this.logger.error(
         { packageName, error: error.message },
-        '[saveMetadataViaStorage] Failed to save via storage API for @{packageName}: @{error}, falling back to direct file write'
+        '[saveMetadataViaStorage] Failed to upsert metadata for @{packageName}: @{error}'
       );
-      // 回退到直接文件写入
-      await this.syncer.saveMetadata(packageName, metadata);
+      throw error;
     }
   }
 
@@ -652,7 +649,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
     );
 
     try {
-      const result = await this.syncer.syncPackage(packageName);
+      const result = await this.syncPackageViaStorage(packageName);
 
       if (result.success) {
         res.json({
@@ -822,11 +819,18 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
 
       const successCount = results.filter(r => r.success).length;
       const failedCount = results.filter(r => !r.success).length;
+      const failedResults = results.filter(r => !r.success);
+      const errorSummary = failedResults
+        .map(result => `${result.packageName}: ${result.error || 'Unknown sync error'}`)
+        .join('; ');
 
       this.updateSyncTask(taskId, {
-        status: 'completed',
+        status: failedCount > 0 ? 'failed' : 'completed',
         progress: 100,
         results,
+        error: failedCount > 0
+          ? `Sync failed for ${failedCount} package(s): ${errorSummary}`
+          : undefined,
         currentPackage: undefined
       });
 
@@ -844,23 +848,17 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
    */
   private async syncPackageViaStorage(packageName: string): Promise<SyncResult> {
     try {
-      // 1. 从远端获取最新元数据
-      const remoteMetadata = await this.syncer.fetchRemoteMetadata(packageName);
+      // 1. 获取、合并并规范化元数据（此步骤不持久化）
+      const prepared = await this.syncer.preparePackage(packageName);
 
-      // 2. 读取本地元数据（如果存在）
-      const localMetadata = await this.syncer.readLocalMetadata(packageName);
-
-      // 3. 合并元数据（使用 syncer 的合并逻辑）
-      const mergedMetadata = this.mergeMetadataForSync(localMetadata, remoteMetadata);
-
-      // 4. 通过 Verdaccio 存储 API 保存
-      await this.saveMetadataViaStorage(packageName, mergedMetadata);
+      // 2. 通过 Verdaccio 存储 API 保存
+      await this.saveMetadataViaStorage(packageName, prepared.manifest);
 
       return {
         success: true,
         packageName,
-        versionsCount: Object.keys(mergedMetadata.versions || {}).length,
-        distTags: mergedMetadata['dist-tags'] || {}
+        versionsCount: prepared.versionsCount,
+        distTags: prepared.distTags
       };
     } catch (error: any) {
       this.logger.error(
@@ -876,36 +874,6 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
         error: error.message
       };
     }
-  }
-
-  /**
-   * 合并本地和远端元数据
-   */
-  private mergeMetadataForSync(local: Manifest | null, remote: Manifest): Manifest {
-    if (!local) {
-      return remote;
-    }
-
-    // 远端元数据优先，但保留本地的 _uplinks 等信息
-    const merged = { ...remote };
-
-    // 合并版本信息（保留本地有但远端没有的版本）
-    if (local.versions) {
-      merged.versions = { ...local.versions, ...remote.versions };
-    }
-
-    // 保留本地的 _uplinks 信息
-    if (local._uplinks) {
-      merged._uplinks = {
-        ...local._uplinks,
-        synced: {
-          etag: '',
-          fetched: Date.now()
-        }
-      };
-    }
-
-    return merged;
   }
 
   /**
