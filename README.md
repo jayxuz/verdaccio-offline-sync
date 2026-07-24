@@ -37,6 +37,8 @@
 - **同级版本补全** - 自动下载同 minor 最新 patch 和同 major 最新 minor 版本
 - **本地路径导入** - 支持从服务器本地路径直接导入差分包
 - **链式依赖与重建增强** - 修复链式依赖漏下载问题，增强 `/ingest/sync` 与 `/ingest/rebuild-index` 的元数据写回能力
+- **清单并发写入保护** - 通过 Verdaccio package storage 串行持久化同步与重建产生的元数据，避免并发直接写入 `package.json` 时相互覆盖
+- **本地清单规范化** - 读写前修复缺失或异常的 `versions`、`dist-tags`、attachments、distfiles 等映射字段，提高历史缓存兼容性
 - **Scoped 包文件名兼容** - 同时兼容 `package-x.y.z.tgz` 与 `scope-package-x.y.z.tgz` 两种 tarball 命名
 - **完整性校验** - 下载后自动校验 tarball SHA-1，防止损坏包污染本地缓存；本地版本解析时同步校验文件完整性，自动剔除损坏文件
 
@@ -163,7 +165,7 @@ test "$(rg -c '^  metadata-healer:$' examples/config-offline.yaml)" -eq 1
 
 ### 存储清单迁移与回滚
 
-仓库提供 `scripts/repair-storage-manifests.mjs`，用于补齐历史 `package.json` 中的 `_attachments` 与 `dist` 文件名。以下路径都是占位示例，运行前必须替换为本机绝对路径；storage 与 backup 不能相同，backup 也不能位于 storage 内。
+仓库提供 `scripts/repair-storage-manifests.mjs`，用于规范化历史 `package.json` 中的 `_attachments` 等映射字段，并根据版本元数据回填 `_distfiles` 条目。以下路径都是占位示例，运行前必须替换为本机绝对路径；storage 与 backup 不能相同，backup 也不能位于 storage 内。
 
 先执行只读 dry-run，并用 `jq` 检查报告：
 

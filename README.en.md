@@ -37,6 +37,8 @@ English | [中文](./README.md)
 - **Sibling Version Completion** - Automatically downloads the latest patch within the same minor and the latest minor within the same major
 - **Local Path Import** - Import differential packages directly from server local paths
 - **Dependency Chain & Rebuild Hardening** - Fixes missing transitive dependency downloads and improves metadata persistence in `/ingest/sync` and `/ingest/rebuild-index`
+- **Concurrent Manifest Write Protection** - Serializes metadata from sync and rebuild operations through Verdaccio package storage, preventing concurrent direct `package.json` writes from overwriting each other
+- **Local Manifest Normalization** - Repairs missing or invalid `versions`, `dist-tags`, attachments, distfiles, and related map fields before reads and writes for compatibility with historical caches
 - **Scoped Tarball Filename Compatibility** - Supports both `package-x.y.z.tgz` and `scope-package-x.y.z.tgz` naming styles
 - **Integrity Verification** - Auto-validates tarball SHA-1 checksums after download to prevent corrupt packages from polluting local cache; verifies file integrity during local version resolution and auto-removes corrupt files
 
@@ -118,101 +120,163 @@ npm install -g verdaccio-ingest-middleware
 npm install -g verdaccio-metadata-healer
 ```
 
-### Configure Online Verdaccio
+### Online and Offline Configuration Roles
+
+Online proxy caching and offline consumption/import are mutually exclusive deployment roles:
+
+- The **online side** configures an uplink and `packages.proxy`. `ingest-middleware` analyzes and downloads packages from upstream and exports the cache, while `offline-storage` must use `offline: false`.
+- The **offline side** does not configure an uplink, proxy, or `ingest-middleware`. With `offline: true`, `offline-storage` resolves only local packages, while the `metadata-healer` filter repairs metadata. The offline example declares no `middlewares`, so no import route is registered.
+
+Do not enable ingest and healer in the same Verdaccio instance. Ingest depends on upstream and owns writes to the online cache; healer targets isolated storage and may repair or import metadata. Letting both operate on one storage blurs network and data ownership boundaries and can cause concurrent writes, unintended upstream fallback, or re-export of unverified data. Use separate instances, or at minimum separate configurations and storage directories.
+
+- Complete online example: [examples/config-online.yaml](./examples/config-online.yaml)
+- Complete offline example: [examples/config-offline.yaml](./examples/config-offline.yaml)
+
+The `access` and `publish` rules in these examples only illustrate the structure. Preserve and review the production access controls already in use; do not overwrite them with the example permissions. The examples use relative storage paths, which should be adjusted for the Verdaccio working directory or container mount used in production.
+
+The implementation registers import routes only when `middlewares.metadata-healer.enableImportUI` is `true`; a generic `enabled: false` flag is not a safeguard here. Add the following block to the offline configuration only when Web UI import is required:
 
 ```yaml
-# config-external.yaml
-storage: /verdaccio/storage/data
-
-store:
-  '@jayxuz/verdaccio-offline-storage':
-    offline: false
-    verifyChecksum: true
-    minTarballSize: 128
-
-uplinks:
-  npmjs:
-    url: https://registry.npmjs.org
-
-packages:
-  '@*/*':
-    access: $all
-    publish: $authenticated
-    proxy: npmjs
-  '**':
-    access: $all
-    publish: $authenticated
-    proxy: npmjs
-
-middlewares:
-  ingest-middleware:
-    enabled: true
-    upstreamRegistry: https://registry.npmjs.org
-    # Processing concurrency for download/scan/analyze/export (default: 5)
-    concurrency: 5
-    timeout: 60000
-    # Tarball integrity verification (default: true, compares SHA-1 after download)
-    verifyChecksum: true
-    # Minimum tarball size in bytes, smaller files treated as corrupt (default: 128)
-    minTarballSize: 128
-    platforms:
-      - os: linux
-        arch: x64
-        libc: glibc
-      - os: linux
-        arch: arm64
-        libc: glibc
-      - os: win32
-        arch: x64
-      - os: win32
-        arch: arm64
-    sync:
-      refreshAllMetadataBeforeAnalyze: false
-      updateToLatest: false
-      completeSiblingVersions: false
-      includeDev: false
-      includePeer: true
-      includeOptional: true
-      maxDepth: 10
-```
-
-### Configure Offline Verdaccio
-
-```yaml
-# config-internal.yaml
-storage: /verdaccio/storage/data
-
-store:
-  '@jayxuz/verdaccio-offline-storage':
-    offline: true  # Force offline mode
-    # Verify local tarball SHA-1 against metadata (default: true)
-    verifyChecksum: true
-    # Minimum tarball size in bytes, smaller files treated as corrupt (default: 128)
-    minTarballSize: 128
-
-packages:
-  '@*/*':
-    access: $all
-    publish: $authenticated
-  '**':
-    access: $all
-    publish: $authenticated
-
-filters:
-  metadata-healer:
-    enabled: true
-    # Batch metadata sync concurrency for /sync-all (default: 5)
-    syncConcurrency: 5
-    scanCacheTTL: 60000
-    shasumCacheSize: 10000
-    autoUpdateLatest: true
-
-# Enable import middleware (optional, for Web UI import)
 middlewares:
   metadata-healer:
-    enabled: true
     enableImportUI: true
 ```
+
+After changing the configuration, use this command for a quick manual review:
+
+```bash
+rg -n "ingest-middleware|metadata-healer|offline:|proxy:" examples/config-*.yaml
+```
+
+The output still requires interpretation. For repeatable assertions whose exit code indicates success or failure, run:
+
+```bash
+set -eu
+! rg -n 'metadata-healer' examples/config-online.yaml
+! rg -n 'ingest-middleware|proxy:|^uplinks:|^middlewares:' examples/config-offline.yaml
+test "$(rg -c '^    offline: false$' examples/config-online.yaml)" -eq 1
+test "$(rg -c '^    offline: true$' examples/config-offline.yaml)" -eq 1
+test "$(rg -c '^    proxy: npmjs$' examples/config-online.yaml)" -eq 2
+test "$(rg -c '^  metadata-healer:$' examples/config-offline.yaml)" -eq 1
+```
+
+Acceptance rules: the online configuration contains only `ingest-middleware`, uses `offline: false`, and assigns `proxy` to both package rules. The offline configuration contains only the `metadata-healer` filter, uses `offline: true`, and contains no uplink, middleware, or `proxy`.
+
+### Storage Manifest Migration and Rollback
+
+The repository provides `scripts/repair-storage-manifests.mjs` to normalize `_attachments` and related map fields in historical `package.json` manifests and backfill `_distfiles` entries from version metadata. Every path below is a placeholder and must be replaced with an absolute local path. Storage and backup must differ, and the backup directory must not be inside storage.
+
+Start with a read-only dry run and inspect the report with `jq`:
+
+```bash
+# Replace these values with actual local paths.
+REPO_ROOT=/absolute/path/to/verdaccio-offline-sync
+STORAGE_DIR=/absolute/path/to/verdaccio/storage/data
+DRY_RUN_REPORT=/tmp/verdaccio-manifest-dry-run.json
+
+node "$REPO_ROOT/scripts/repair-storage-manifests.mjs" \
+  --storage "$STORAGE_DIR" | tee "$DRY_RUN_REPORT"
+jq -e '.fileErrors == 0 and .parseErrors == 0' "$DRY_RUN_REPORT"
+```
+
+Review the dry-run scope and error counts before applying changes. **Stop every Verdaccio instance or container that reads or writes this storage before apply**, then provide a dedicated absolute backup directory outside storage:
+
+```bash
+# Replace these values with actual local paths.
+APPLY_REPORT=/tmp/verdaccio-manifest-apply.json
+BACKUP_DIR=/absolute/path/outside-storage/manifest-backup-YYYYMMDD
+
+node "$REPO_ROOT/scripts/repair-storage-manifests.mjs" \
+  --storage "$STORAGE_DIR" \
+  --apply \
+  --backup-dir "$BACKUP_DIR" | tee "$APPLY_REPORT"
+jq -e '.fileErrors == 0 and .parseErrors == 0 and .modified == .backups' \
+  "$APPLY_REPORT"
+```
+
+The validation summary for the completed migration is retained below for traceability. It records evidence from that run and is not a hard-coded expectation for future migrations; always use the current dry-run and apply reports.
+
+| Metric | Recorded result |
+|--------|----------------:|
+| dry-run/apply `scan` | 10478 |
+| dry-run `wouldModify` | 5842 |
+| dry-run `missingAttachments` | 1436 |
+| dry-run `missingDistfiles` | 5574 |
+| dry-run `parseErrors` | 0 |
+| dry-run `backfilledDistfiles` | 721518 |
+| apply `modified` | 5842 |
+| apply `backups` | 5842 |
+| apply `fileErrors` | 0 |
+| post-scan `wouldModify` | 0 |
+| post-scan `missingAttachments` | 0 |
+| post-scan `missingDistfiles` | 0 |
+| post-scan `parseErrors` | 0 |
+
+After apply and before restarting Verdaccio, run another dry scan and validate it with `jq`. You can also ask `jq` to parse every manifest:
+
+```bash
+POST_REPORT=/tmp/verdaccio-manifest-post-scan.json
+node "$REPO_ROOT/scripts/repair-storage-manifests.mjs" \
+  --storage "$STORAGE_DIR" | tee "$POST_REPORT"
+jq -e '.wouldModify == 0 and .parseErrors == 0 and .fileErrors == 0' "$POST_REPORT"
+find "$STORAGE_DIR" -type f -name package.json -exec jq -e empty {} +
+```
+
+To roll back, stop Verdaccio again. The backup preserves the same relative directory structure as storage, so restore only the backed-up `package.json` files by relative path. Do not restore the whole storage volume and do not overwrite or delete `.tgz` files.
+
+First run this read-only check to resolve both paths to existing absolute directories, reject nested paths, and review the files that would be restored:
+
+```bash
+(
+  set -eu
+  backup_real=$(realpath -e -- "$BACKUP_DIR")
+  storage_real=$(realpath -e -- "$STORAGE_DIR")
+  [ -d "$backup_real" ] && [ -d "$storage_real" ]
+  [ "$backup_real" != / ] && [ "$storage_real" != / ]
+  case "$backup_real" in
+    "$storage_real"|"$storage_real"/*)
+      echo 'Rollback refused: backup equals storage or is inside storage' >&2
+      exit 1
+      ;;
+  esac
+  case "$storage_real" in
+    "$backup_real"|"$backup_real"/*)
+      echo 'Rollback refused: storage is inside backup' >&2
+      exit 1
+      ;;
+  esac
+  find "$backup_real" -type f -name package.json -print
+)
+```
+
+After confirming that the list contains only manifests from this backup, restore them:
+
+```bash
+(
+  set -eu
+  backup_real=$(realpath -e -- "$BACKUP_DIR")
+  storage_real=$(realpath -e -- "$STORAGE_DIR")
+  [ -d "$backup_real" ] && [ -d "$storage_real" ]
+  [ "$backup_real" != / ] && [ "$storage_real" != / ]
+  case "$backup_real" in
+    "$storage_real"|"$storage_real"/*)
+      echo 'Rollback refused: backup equals storage or is inside storage' >&2
+      exit 1
+      ;;
+  esac
+  case "$storage_real" in
+    "$backup_real"|"$backup_real"/*)
+      echo 'Rollback refused: storage is inside backup' >&2
+      exit 1
+      ;;
+  esac
+  cd -- "$backup_real" &&
+    find . -type f -name package.json -print0 \
+      | xargs -0 -r cp --archive --parents --target-directory="$storage_real" --
+)
+```
+
+Repeat the dry run and `jq` checks after rollback before deciding whether to restart the service. Keep original production reports with production storage and backups outside the repository. The README contains only the validation summary above. Manage all production data according to the organization's protection and retention policies.
 
 ## Web UI Guide
 

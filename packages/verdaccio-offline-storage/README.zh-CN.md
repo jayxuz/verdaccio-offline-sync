@@ -33,6 +33,10 @@
 - **改进的离线检测**：增强 `readPackage` 逻辑，改进 `getMatchedPackagesSpec` 的空值安全处理
 - **存储路径日志**：`getPackageStorage` 现在记录包存储路径创建信息，便于调试
 
+### 清单可靠性（v3.1.6）
+- **清单规范化**：读写前将缺失或异常的 `versions`、`dist-tags`、`_attachments`、`_distfiles`、`_uplinks` 和 `time` 字段规范化为映射对象
+- **串行合并更新**：同一个包的并发元数据更新会通过 storage 排队并合并，避免一次同步覆盖另一次同步的结果
+
 ### 代码质量
 - **现代 JavaScript**：ES2020+ 特性、async/await、可选链
 - **类型定义**：包含完整的 TypeScript 类型定义
@@ -45,6 +49,7 @@
 - **透明**：与现有的 `local-storage` 缓存兼容，无需修改
 - **选择性离线模式**：可以全局启用或根据 proxy 配置按包启用
 - **Tarball 完整性校验**：校验本地 tarball SHA-1 与 metadata 是否一致，自动剔除损坏文件
+- **并发更新安全**：规范化并串行处理清单更新，兼容不完整的历史缓存及并发同步操作
 - **Web 界面集成**：在 Verdaccio 的 Web 界面中列出所有本地可用的包
 
 ## 安装

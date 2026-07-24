@@ -18,6 +18,8 @@
 - **元数据同步**（新增）：从上游仓库同步包元数据到本地存储，支持单包和批量同步
 - **Scoped 包支持**（新增）：优化包名提取逻辑，支持 `@scope/package` 嵌套目录结构
 - **存储访问修复**：修复包存储获取方式，使用 `_getLocalStorage` 替代 `getPackageStorage` 以正确获取存储实例
+- **由存储层协调的元数据同步**（v1.1.7）：远端元数据会先与本地 attachments、distfiles 及有效的本地标识字段合并，再由 Verdaccio package storage 持久化，避免直接写文件产生竞争
+- **部署边界**（v1.1.7）：healer 仅用于离线侧，不要让在线 ingest 与离线 healer 写入同一个 storage 目录
 
 ### 导入中间件
 - **差分导入**：导入由 `verdaccio-ingest-middleware` 创建的导出包

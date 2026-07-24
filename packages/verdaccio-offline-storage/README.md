@@ -33,6 +33,10 @@ This is an improved fork of the original `verdaccio-offline-storage` plugin. Key
 - **Improved Offline Detection**: Enhanced `readPackage` logic with better null safety for `getMatchedPackagesSpec`
 - **Storage Path Logging**: `getPackageStorage` now logs package storage path creation for debugging
 
+### Manifest Reliability (v3.1.6)
+- **Manifest Normalization**: Missing or invalid `versions`, `dist-tags`, `_attachments`, `_distfiles`, `_uplinks`, and `time` fields are normalized to maps before reads and writes
+- **Serialized Upserts**: Concurrent metadata updates for the same package are queued and merged through storage, preventing one sync operation from overwriting another
+
 ### Code Quality
 - **Modern JavaScript**: ES2020+ features, async/await, optional chaining
 - **Type Definitions**: Full TypeScript type definitions included
@@ -45,6 +49,7 @@ This is an improved fork of the original `verdaccio-offline-storage` plugin. Key
 - **Transparent**: Works with existing `local-storage` cache without modifications
 - **Selective Offline Mode**: Can be enabled globally or per-package based on proxy configuration
 - **Tarball Integrity Verification**: Validates local tarball SHA-1 checksums against metadata and auto-removes corrupt files
+- **Concurrent Update Safety**: Normalizes and serializes manifest updates for compatibility with incomplete historical caches and concurrent sync operations
 - **Web UI Integration**: Lists all locally available packages in Verdaccio's web interface
 
 ## Installation
