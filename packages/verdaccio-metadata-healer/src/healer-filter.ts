@@ -8,6 +8,7 @@ import { StorageScanner } from './storage-scanner';
 import { MetadataPatcher } from './metadata-patcher';
 import { ShasumCache } from './shasum-cache';
 import { ImportHandler } from './import-handler';
+import { ImportedPackageRefresher } from './imported-package-refresher';
 import { MetadataSyncer, SyncResult } from './metadata-syncer';
 import { getImportUIHTML } from './import-ui';
 import { HealerConfig, TarballInfo, ImportTaskStatus, ImportOptions, ImportProgress } from './types';
@@ -161,7 +162,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
 
         // 即使没有缺失版本，也检查 dist-tags
         if (config.autoUpdateLatest !== false) {
-          this.patcher.updateDistTags(manifest);
+          this.patcher.updateDistTags(manifest, tarballs.map(({ version }) => version));
         }
 
         // 自动保存元数据到本地
@@ -186,7 +187,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
 
       // 4. 更新 dist-tags
       if (config.autoUpdateLatest !== false) {
-        this.patcher.updateDistTags(patchedManifest);
+        this.patcher.updateDistTags(patchedManifest, tarballs.map(({ version }) => version));
       }
 
       // 5. 自动保存修复后的元数据到本地
@@ -365,7 +366,21 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
       return;
     }
 
-    this.importHandler = new ImportHandler(this.storagePath, this.logger);
+    const importedPackageRefresher = new ImportedPackageRefresher(
+      config,
+      this.storagePath,
+      this.logger,
+      storage
+    );
+    this.importHandler = new ImportHandler(
+      this.storagePath,
+      this.logger,
+      async (packageNames, onProgress) => {
+        // 导入可能覆盖已有 tarball，先清除 filter 自身的扫描与哈希缓存。
+        this.clearCache();
+        await importedPackageRefresher.refresh(packageNames, onProgress);
+      }
+    );
 
     // 配置文件上传
     const uploadDir = this.importHandler.getUploadDir();

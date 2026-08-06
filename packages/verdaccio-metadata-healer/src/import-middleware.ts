@@ -5,6 +5,7 @@ import multer from 'multer';
 import path from 'path';
 import { rm } from 'fs/promises';
 import { ImportHandler } from './import-handler';
+import { ImportedPackageRefresher } from './imported-package-refresher';
 import { getImportUIHTML } from './import-ui';
 import {
   HealerConfig,
@@ -35,7 +36,17 @@ export default class ImportMiddleware extends pluginUtils.Plugin<HealerConfig> {
    * 注册中间件路由
    */
   register_middlewares(app: Express, auth: any, storage: any): void {
-    this.importHandler = new ImportHandler(this.storagePath, this.logger);
+    const importedPackageRefresher = new ImportedPackageRefresher(
+      this.config as HealerConfig,
+      this.storagePath,
+      this.logger,
+      storage
+    );
+    this.importHandler = new ImportHandler(
+      this.storagePath,
+      this.logger,
+      importedPackageRefresher.refresh.bind(importedPackageRefresher)
+    );
 
     // 配置文件上传
     const uploadDir = this.importHandler.getUploadDir();

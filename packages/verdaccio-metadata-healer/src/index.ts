@@ -9,4 +9,5 @@ export { StorageScanner } from './storage-scanner';
 export { MetadataPatcher } from './metadata-patcher';
 export { ShasumCache } from './shasum-cache';
 export { ImportHandler } from './import-handler';
+export { ImportedPackageRefresher } from './imported-package-refresher';
 export { getImportUIHTML } from './import-ui';

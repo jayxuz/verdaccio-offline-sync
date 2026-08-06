@@ -135,3 +135,84 @@ describe('PackageDownloader.savePackument', () => {
     assert.equal(errors[0].packageName, 'three-arg-demo');
   });
 });
+
+describe('PackageDownloader.getPlatformDependencies', () => {
+  it('downloads the real target of an npm alias used by Codex platform versions', async () => {
+    const storagePath = await mkdtemp(join(tmpdir(), 'package-downloader-'));
+    temporaryDirectories.push(storagePath);
+    const { logger } = createLogger();
+    const downloader = new PackageDownloader({ enabled: true }, storagePath, logger);
+    const requestedSpecs: string[] = [];
+
+    (downloader as any).getManifest = async (spec: string) => {
+      requestedSpecs.push(spec);
+      if (spec === '@openai/codex@0.146.1') {
+        return {
+          name: '@openai/codex',
+          version: '0.146.1',
+          optionalDependencies: {
+            '@openai/codex-win32-x64': 'npm:@openai/codex@0.146.1-win32-x64'
+          }
+        };
+      }
+      if (spec === '@openai/codex-win32-x64@npm:@openai/codex@0.146.1-win32-x64') {
+        return { name: '@openai/codex', version: '0.146.1-win32-x64' };
+      }
+      throw new Error(`unexpected spec: ${spec}`);
+    };
+
+    const dependencies = await downloader.getPlatformDependencies(
+      '@openai/codex',
+      '0.146.1',
+      [{ os: 'win32', arch: 'x64' }]
+    );
+
+    assert.deepEqual(dependencies, [{
+      name: '@openai/codex',
+      version: '0.146.1-win32-x64'
+    }]);
+    assert.equal(
+      requestedSpecs.includes(
+        '@openai/codex-win32-x64@npm:@openai/codex@0.146.1-win32-x64'
+      ),
+      true
+    );
+  });
+
+  it('keeps real standalone platform package names such as Claude Code', async () => {
+    const storagePath = await mkdtemp(join(tmpdir(), 'package-downloader-'));
+    temporaryDirectories.push(storagePath);
+    const { logger } = createLogger();
+    const downloader = new PackageDownloader({ enabled: true }, storagePath, logger);
+
+    (downloader as any).getManifest = async (spec: string) => {
+      if (spec === '@anthropic-ai/claude-code@2.1.220') {
+        return {
+          name: '@anthropic-ai/claude-code',
+          version: '2.1.220',
+          optionalDependencies: {
+            '@anthropic-ai/claude-code-linux-x64': '2.1.220'
+          }
+        };
+      }
+      if (spec === '@anthropic-ai/claude-code-linux-x64@2.1.220') {
+        return {
+          name: '@anthropic-ai/claude-code-linux-x64',
+          version: '2.1.220'
+        };
+      }
+      throw new Error(`unexpected spec: ${spec}`);
+    };
+
+    const dependencies = await downloader.getPlatformDependencies(
+      '@anthropic-ai/claude-code',
+      '2.1.220',
+      [{ os: 'linux', arch: 'x64', libc: 'glibc' }]
+    );
+
+    assert.deepEqual(dependencies, [{
+      name: '@anthropic-ai/claude-code-linux-x64',
+      version: '2.1.220'
+    }]);
+  });
+});

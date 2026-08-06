@@ -122,3 +122,28 @@ describe('packument persistence failures', () => {
     assert.match(response.body.error, /broken: storage unavailable/);
   });
 });
+
+describe('platform version candidates', () => {
+  it('uses the newest local tarball and also checks versions selected for this upgrade', () => {
+    const middleware = createMiddleware();
+
+    const candidates = middleware.collectPlatformCandidates(
+      [{
+        name: '@anthropic-ai/claude-code',
+        versions: ['2.1.218', '2.1.219'],
+        latestVersion: '2.1.218',
+        dependencies: {}
+      }],
+      [{
+        name: '@anthropic-ai/claude-code',
+        version: '2.1.220',
+        reason: 'newer-version'
+      }]
+    );
+
+    assert.deepEqual(candidates, [
+      { name: '@anthropic-ai/claude-code', version: '2.1.219' },
+      { name: '@anthropic-ai/claude-code', version: '2.1.220' }
+    ]);
+  });
+});

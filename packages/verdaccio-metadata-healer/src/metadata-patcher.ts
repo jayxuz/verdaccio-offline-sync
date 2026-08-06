@@ -188,8 +188,10 @@ export class MetadataPatcher {
   /**
    * 更新 dist-tags
    */
-  updateDistTags(manifest: Manifest): void {
-    const versions = Object.keys(manifest.versions || {});
+  updateDistTags(manifest: Manifest, availableVersions?: string[]): void {
+    const manifestVersions = new Set(Object.keys(manifest.versions || {}));
+    const versions = (availableVersions || Array.from(manifestVersions))
+      .filter((version) => manifestVersions.has(version));
     if (versions.length === 0) return;
 
     // 过滤出有效的 semver 版本
@@ -218,11 +220,8 @@ export class MetadataPatcher {
       manifest['dist-tags'] = {};
     }
 
-    // 只在没有 latest 或当前 latest 不存在时更新
-    if (
-      !manifest['dist-tags'].latest ||
-      !manifest.versions[manifest['dist-tags'].latest]
-    ) {
+    // 始终对齐到本地实际可用的最高稳定版本，升级包导入后立即生效。
+    if (manifest['dist-tags'].latest !== latestStable) {
       manifest['dist-tags'].latest = latestStable;
 
       this.logger.debug(

@@ -1,5 +1,5 @@
-import { createReadStream, createWriteStream } from 'fs';
-import { mkdir, rm, copyFile, readFile, writeFile, stat, access } from 'fs/promises';
+import { createReadStream } from 'fs';
+import { mkdir, rm, copyFile, readFile, writeFile, access } from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
 import tar from 'tar';
@@ -11,7 +11,7 @@ import {
   ImportOptions,
   ImportProgress,
   ExportManifest,
-  ExportFileEntry
+  ImportMetadataRebuilder
 } from './types';
 
 const IMPORT_HISTORY_FILE = '.import-history.json';
@@ -24,10 +24,16 @@ const TEMP_IMPORT_DIR = '.import-temp';
 export class ImportHandler {
   private storagePath: string;
   private logger: Logger;
+  private rebuildImportedMetadata?: ImportMetadataRebuilder;
 
-  constructor(storagePath: string, logger: Logger) {
+  constructor(
+    storagePath: string,
+    logger: Logger,
+    rebuildImportedMetadata?: ImportMetadataRebuilder
+  ) {
     this.storagePath = storagePath;
     this.logger = logger;
+    this.rebuildImportedMetadata = rebuildImportedMetadata;
   }
 
   /**
@@ -241,9 +247,32 @@ export class ImportHandler {
           });
         }
 
-        // 这里只是标记需要重建，实际重建由 healer-filter 在下次请求时自动完成
-        // 或者可以调用外部的重建逻辑
-        metadataRebuilt = true;
+        if (this.rebuildImportedMetadata) {
+          await this.rebuildImportedMetadata(
+            Array.from(packages),
+            (processed, total, packageName) => {
+              if (onProgress) {
+                const progress = Math.round((processed / total) * 100);
+                onProgress({
+                  phase: 'rebuilding',
+                  phaseProgress: progress,
+                  totalProgress: 90 + Math.round(progress * 0.05),
+                  currentFile: packageName,
+                  processed,
+                  total,
+                  startTime,
+                  phaseDescription: `重建元数据: ${packageName}`
+                });
+              }
+            }
+          );
+          metadataRebuilt = true;
+        } else {
+          this.logger.warn(
+            { importId, packages: packages.size },
+            'Metadata rebuild requested for @{importId}, but no rebuilder is configured'
+          );
+        }
 
         if (onProgress) {
           onProgress({
@@ -253,7 +282,9 @@ export class ImportHandler {
             processed: packages.size,
             total: packages.size,
             startTime,
-            phaseDescription: '元数据将在下次访问时自动重建'
+            phaseDescription: metadataRebuilt
+              ? '元数据重建完成，本地包列表已刷新'
+              : '文件导入完成，但未配置元数据重建器'
           });
         }
       }

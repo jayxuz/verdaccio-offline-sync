@@ -329,22 +329,22 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       // 5. 下载多平台二进制包
       this.updateTask(taskId, { message: 'Downloading platform binaries...' });
       const binaryLimit = pLimit(this.getConcurrency());
+      const binaryCandidates = this.collectPlatformCandidates(cachedPackages, missingPackages);
       let binaryProcessed = 0;
-      const binaryTotal = Math.max(1, cachedPackages.length);
+      const binaryTotal = Math.max(1, binaryCandidates.length);
 
       await Promise.all(
-        cachedPackages.map((pkg) =>
+        binaryCandidates.map((candidate) =>
           binaryLimit(async () => {
-            const targetVersion = pkg.latestVersion || pkg.versions[0];
             const isBinary = await this.downloader.detectBinaryPackage(
-              pkg.name,
-              targetVersion
+              candidate.name,
+              candidate.version
             );
 
             if (isBinary) {
               const platformResults = await this.downloader.downloadForPlatforms(
-                pkg.name,
-                targetVersion,
+                candidate.name,
+                candidate.version,
                 platforms
               );
               for (const result of platformResults) {
@@ -653,23 +653,23 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       });
 
       const platformPackages: PackageToDownload[] = [];
+      const binaryCandidates = this.collectPlatformCandidates(cachedPackages, missingPackages);
       let binaryChecked = 0;
-      const binaryTotal = Math.max(1, cachedPackages.length);
+      const binaryTotal = Math.max(1, binaryCandidates.length);
       const binaryLimit = pLimit(this.getConcurrency());
 
       await Promise.all(
-        cachedPackages.map((pkg) =>
+        binaryCandidates.map((candidate) =>
           binaryLimit(async () => {
-            const targetVersion = pkg.latestVersion || pkg.versions[0];
             const isBinary = await this.downloader.detectBinaryPackage(
-              pkg.name,
-              targetVersion
+              candidate.name,
+              candidate.version
             );
 
             if (isBinary) {
               const platformDeps = await this.downloader.getPlatformDependencies(
-                pkg.name,
-                targetVersion,
+                candidate.name,
+                candidate.version,
                 targetPlatforms
               );
               for (const dep of platformDeps) {
@@ -677,7 +677,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
                   name: dep.name,
                   version: dep.version,
                   reason: 'platform-binary',
-                  requiredBy: `${pkg.name}@${targetVersion}`
+                  requiredBy: `${candidate.name}@${candidate.version}`
                 });
               }
             }
@@ -690,11 +690,11 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
                 phase: 'detecting-binaries',
                 phaseProgress: binaryProgress,
                 totalProgress: 85 + Math.round(binaryProgress * 0.1),
-                currentPackage: pkg.name,
+                currentPackage: candidate.name,
                 processed: binaryChecked,
-                total: cachedPackages.length,
+                total: binaryCandidates.length,
                 startTime,
-                phaseDescription: `检测二进制包: ${pkg.name}`
+                phaseDescription: `检测二进制包: ${candidate.name}`
               }
             });
           })
@@ -1213,6 +1213,39 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       }
     }
     return Array.from(seen.values());
+  }
+
+  /**
+   * 平台依赖必须同时检查当前本地版本和本轮即将下载的新版本。
+   * 扫描阶段读取的 dist-tag 可能仍指向旧版本，因此本地候选以实际 tarball 为准。
+   */
+  private collectPlatformCandidates(
+    cachedPackages: CachedPackage[],
+    pendingPackages: PackageToDownload[] = []
+  ): Array<{ name: string; version: string }> {
+    const candidates = new Map<string, { name: string; version: string }>();
+    const add = (name: string, version: string | undefined) => {
+      if (!version) return;
+      const key = `${name}@${version}`;
+      if (!candidates.has(key)) {
+        candidates.set(key, { name, version });
+      }
+    };
+
+    for (const pkg of cachedPackages) {
+      const localLatest = this.findLatestVersion(pkg.versions);
+      const metadataLatestIsLocal = pkg.latestVersion && pkg.versions.includes(pkg.latestVersion);
+      add(
+        pkg.name,
+        localLatest || (metadataLatestIsLocal ? pkg.latestVersion : undefined) || pkg.versions[0]
+      );
+    }
+
+    for (const pkg of pendingPackages) {
+      add(pkg.name, pkg.version);
+    }
+
+    return Array.from(candidates.values());
   }
 
   /**

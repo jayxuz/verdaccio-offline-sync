@@ -12,6 +12,7 @@ import {
   ProgressCallback,
   AnalysisProgress
 } from './types';
+import { isPlatformSpecificPackageName } from './platform-utils';
 
 /**
  * 依赖解析器 - 解析依赖树并找出缺失的包
@@ -315,7 +316,7 @@ export class DependencyResolver {
             const versionManifest = packument?.versions?.[resolvedVersion];
 
             if (versionManifest) {
-              const dependencies = this.collectDependencies(versionManifest, options);
+              const dependencies = this.collectDependencies(versionManifest, options, true);
 
               // 收集子依赖到下一层
               for (const [depName, depRange] of Object.entries(dependencies)) {
@@ -652,15 +653,27 @@ export class DependencyResolver {
    */
   private collectDependencies(
     manifest: any,
-    options: SyncOptions
+    options: SyncOptions,
+    excludePlatformSpecific: boolean = false
   ): Record<string, string> {
     if (!manifest) return {};
+
+    // 平台 optionalDependencies 由目标平台检测阶段处理，否则这里会把
+    // Claude Code 的所有平台包都加入下载，并会错误解析 Codex 的 npm alias。
+    const optionalDependencies = options.includeOptional
+      ? Object.fromEntries(
+          Object.entries(manifest.optionalDependencies || {})
+            .filter(([name]) =>
+              !excludePlatformSpecific || !isPlatformSpecificPackageName(name)
+            )
+        )
+      : {};
 
     return {
       ...(manifest.dependencies || {}),
       ...(options.includeDev ? manifest.devDependencies || {} : {}),
       ...(options.includePeer ? manifest.peerDependencies || {} : {}),
-      ...(options.includeOptional ? manifest.optionalDependencies || {} : {})
+      ...optionalDependencies
     };
   }
 

@@ -169,6 +169,19 @@ export interface ImportOptions {
   validateChecksum?: boolean;
 }
 
+/** 导入后重建单个包完成时的进度回调 */
+export type ImportRebuildProgressCallback = (
+  processed: number,
+  total: number,
+  packageName: string
+) => void;
+
+/** 导入后重建受影响包元数据并刷新本地包列表 */
+export type ImportMetadataRebuilder = (
+  packageNames: string[],
+  onProgress?: ImportRebuildProgressCallback
+) => Promise<void>;
+
 /**
  * 导出清单（从导出包中读取）
  */

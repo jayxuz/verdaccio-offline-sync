@@ -12,6 +12,10 @@ import {
 } from './types';
 import { persistPackumentWithVerdaccioStorage } from './packument-persistence';
 import type { PackumentPersistence } from './packument-persistence';
+import {
+  isPlatformSpecificPackageName,
+  matchesPlatformPackageName
+} from './platform-utils';
 
 /**
  * 包下载器 - 负责从上游仓库下载包
@@ -356,7 +360,7 @@ export class PackageDownloader {
       // 检查 optionalDependencies 中的平台特定包
       const hasOptionalPlatformDeps = Object.keys(
         manifest.optionalDependencies || {}
-      ).some((dep) => this.isPlatformSpecificPackage(dep));
+      ).some((dep) => isPlatformSpecificPackageName(dep));
 
       // 检查 package.json 中的 os/cpu 字段
       const hasOsCpuRestriction = manifest.os || manifest.cpu;
@@ -440,7 +444,7 @@ export class PackageDownloader {
 
     const optionalDeps = manifest.optionalDependencies || {};
     const candidates = Object.entries(optionalDeps)
-      .filter(([name]) => this.matchesPlatform(name, platform));
+      .filter(([name]) => matchesPlatformPackageName(name, platform));
     const limit = pLimit(Math.min(this.getConcurrency(), Math.max(1, candidates.length)));
 
     const results = await Promise.all(
@@ -449,7 +453,11 @@ export class PackageDownloader {
           try {
             const depManifest = await this.getManifest(`${name}@${versionRange}`, false);
             return {
-              name,
+              // npm aliases use the dependency key as an install-time alias, but
+              // the registry tarball belongs to the manifest's real package.
+              // Example: @openai/codex-win32-x64 points to
+              // npm:@openai/codex@0.146.1-win32-x64.
+              name: typeof depManifest.name === 'string' ? depManifest.name : name,
               version: depManifest.version
             };
           } catch {
@@ -460,62 +468,6 @@ export class PackageDownloader {
     );
 
     return results.filter((item): item is { name: string; version: string } => item !== null);
-  }
-
-  /**
-   * 检查包名是否是平台特定的
-   */
-  private isPlatformSpecificPackage(packageName: string): boolean {
-    const platformPatterns = [
-      /@esbuild\//,
-      /@swc\/core-/,
-      /@rollup\/rollup-/,
-      /@img\/sharp-/,
-      /-linux-/,
-      /-win32-/,
-      /-darwin-/,
-      /-x64/,
-      /-arm64/,
-      /-gnu$/,
-      /-musl$/,
-      /-msvc$/
-    ];
-
-    return platformPatterns.some((pattern) => pattern.test(packageName));
-  }
-
-  /**
-   * 检查包名是否匹配指定平台
-   */
-  private matchesPlatform(packageName: string, platform: PlatformConfig): boolean {
-    const name = packageName.toLowerCase();
-
-    // 检查操作系统
-    const osMatch =
-      (platform.os === 'linux' && name.includes('linux')) ||
-      (platform.os === 'win32' && name.includes('win32')) ||
-      (platform.os === 'darwin' && name.includes('darwin'));
-
-    if (!osMatch) return false;
-
-    // 检查架构
-    const archMatch =
-      (platform.arch === 'x64' && (name.includes('x64') || name.includes('x86_64'))) ||
-      (platform.arch === 'arm64' && (name.includes('arm64') || name.includes('aarch64'))) ||
-      (platform.arch === 'ia32' && (name.includes('ia32') || name.includes('x86')));
-
-    if (!archMatch) return false;
-
-    // 检查 libc（仅 Linux）
-    if (platform.os === 'linux' && platform.libc) {
-      const libcMatch =
-        (platform.libc === 'glibc' && (name.includes('gnu') || !name.includes('musl'))) ||
-        (platform.libc === 'musl' && name.includes('musl'));
-
-      return libcMatch;
-    }
-
-    return true;
   }
 
   /**
