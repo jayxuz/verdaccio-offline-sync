@@ -21,6 +21,7 @@ A Verdaccio middleware plugin for recursive package ingestion with multi-platfor
 - **Scoped Tarball Filename Compatibility** (v1.2.5): `/rebuild-index` now supports both scoped tarball formats: `package-x.y.z.tgz` and `scope-package-x.y.z.tgz`
 - **Metadata Rebuild & Sync Hardening** (v1.2.5): `/sync` now persists metadata for newly downloaded packages, and `/rebuild-index` can create missing `package.json` and refresh local `dist-tags.latest`
 - **Serialized Manifest Persistence** (v1.2.8): Sync, download, and rebuild metadata is persisted through Verdaccio package storage instead of direct `package.json` writes, preventing concurrent operations from overwriting each other
+- **Platform Package Resolution Fix** (v1.2.9): Correctly resolves Codex platform versions expressed as npm aliases (for example `npm:@openai/codex@0.146.1-win32-x64`), Claude Code standalone platform packages, and tarball versions with multi-part platform suffixes
 
 ## Installation
 

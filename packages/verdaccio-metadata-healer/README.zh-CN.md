@@ -20,11 +20,14 @@
 - **存储访问修复**：修复包存储获取方式，使用 `_getLocalStorage` 替代 `getPackageStorage` 以正确获取存储实例
 - **由存储层协调的元数据同步**（v1.1.7）：远端元数据会先与本地 attachments、distfiles 及有效的本地标识字段合并，再由 Verdaccio package storage 持久化，避免直接写文件产生竞争
 - **部署边界**（v1.1.7）：healer 仅用于离线侧，不要让在线 ingest 与离线 healer 写入同一个 storage 目录
+- **平台版本恢复**（v1.1.8）：扫描时识别 `0.146.1-win32-x64` 等多段平台后缀版本，以及 `claude-code-linux-x64-2.1.220.tgz` 等独立平台包 tarball
 
 ### 导入中间件
 - **差分导入**：导入由 `verdaccio-ingest-middleware` 创建的导出包
 - **本地路径导入**（新增）：通过 `/local` 接口直接从服务器本地路径导入 `.tar.gz` 包
 - **Web 界面**：内置上传和管理导入的界面
+- **本地缓存索引重建**：完全离线扫描历史 storage，重建元数据、`latest` 标签和本地包列表，可重复执行
+- **历史缓存立即可用**（v1.1.8）：差分导入后立即持久化并注册受影响包；也可通过 Web UI 或 `/_/healer/rebuild-index` 修复此前已经导入或下载的缓存
 - **进度跟踪**：导入过程中实时更新进度
 - **校验和验证**：导入时验证文件完整性
 - **导入历史**：跟踪所有导入操作
@@ -114,6 +117,8 @@ middlewares:
 | POST | `/import/local` | 从服务器本地路径导入 `.tar.gz` 包 |
 | GET | `/import/status/:taskId` | 查询导入任务状态 |
 | GET | `/import/history` | 获取导入历史 |
+| POST | `/rebuild-index` | 完全离线重建所有本地缓存包的元数据和包列表（异步任务） |
+| GET | `/rebuild/status/:taskId` | 查询本地缓存重建任务状态 |
 
 ### 元数据同步端点
 
@@ -189,12 +194,26 @@ curl http://localhost:4873/_/healer/sync/status/task-xxx
 curl http://localhost:4873/_/healer/packages
 ```
 
+### 重建历史本地缓存
+
+此操作只读取本地 storage，不访问 uplink，适用于修复过去已经导入或下载、但未进入本地包列表的包。
+
+```bash
+# 启动全量重建，可安全重复执行
+curl -X POST http://localhost:4873/_/healer/rebuild-index
+# 响应: {"success": true, "taskId": "rebuild-xxx", "totalPackages": 100}
+
+# 查询任务进度和逐包结果
+curl http://localhost:4873/_/healer/rebuild/status/rebuild-xxx
+```
+
 ## Web 管理界面
 
 访问 `http://localhost:4873/_/healer/ui` 可以：
 
 - 拖放文件上传
 - 从服务器本地路径导入
+- 完全离线重建历史本地缓存索引
 - 实时查看导入进度
 - 查看导入历史
 - 监控任务状态

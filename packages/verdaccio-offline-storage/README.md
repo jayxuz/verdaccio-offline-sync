@@ -37,6 +37,10 @@ This is an improved fork of the original `verdaccio-offline-storage` plugin. Key
 - **Manifest Normalization**: Missing or invalid `versions`, `dist-tags`, `_attachments`, `_distfiles`, `_uplinks`, and `time` fields are normalized to maps before reads and writes
 - **Serialized Upserts**: Concurrent metadata updates for the same package are queued and merged through storage, preventing one sync operation from overwriting another
 
+### Platform-Suffixed Version Compatibility (v3.1.7)
+- **Multi-Part Prerelease Recognition**: Correctly recognizes platform versions such as `0.146.1-win32-x64` and `0.146.1-linux-arm64-musl`, preventing existing local tarballs from being filtered out offline
+- **Standalone Platform Package Compatibility**: Continues to support tarballs whose package names contain platform information, such as `claude-code-linux-x64-2.1.220.tgz`
+
 ### Code Quality
 - **Modern JavaScript**: ES2020+ features, async/await, optional chaining
 - **Type Definitions**: Full TypeScript type definitions included

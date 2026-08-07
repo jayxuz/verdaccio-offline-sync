@@ -2,6 +2,7 @@ import { readdir, stat, readFile, writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 import pLimit from 'p-limit';
 import { Logger } from '@verdaccio/types';
+import { extractTarballVersion } from './tarball-version';
 import {
   ExportHistoryFile,
   ExportRecord,
@@ -111,7 +112,7 @@ export class DifferentialScanner {
               this.normalizePackagePath(relativePath)
             );
             const version = fileType === 'tarball'
-              ? this.extractVersionFromFilename(packageName, entry.name)
+              ? extractTarballVersion(entry.name) || undefined
               : undefined;
 
             files.push({
@@ -165,21 +166,6 @@ export class DifferentialScanner {
       return `${parts[0]}/${parts[1]}`;
     }
     return parts[0] || relativePath;
-  }
-
-  /**
-   * 从文件名提取版本号
-   */
-  private extractVersionFromFilename(
-    packageName: string,
-    filename: string
-  ): string | undefined {
-    const baseName = filename.replace('.tgz', '');
-    // 匹配格式: package-1.0.0.tgz 或 package-1.0.0-beta.1.tgz
-    const versionMatch = baseName.match(
-      /-(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?(?:\+[a-zA-Z0-9.]+)?)$/
-    );
-    return versionMatch ? versionMatch[1] : undefined;
   }
 
   /**

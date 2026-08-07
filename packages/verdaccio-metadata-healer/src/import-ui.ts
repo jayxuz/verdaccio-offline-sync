@@ -556,6 +556,40 @@ export function getImportUIHTML(config: any): string {
       </div>
     </div>
 
+    <!-- 本地缓存索引重建 -->
+    <div class="card">
+      <h2>🔄 重建本地缓存索引</h2>
+      <p style="color: #666; margin-bottom: 15px;">
+        完全离线扫描 storage 中现有的包与 tarball，重建 package.json、latest 标签和本地包列表。
+        适用于修复此前已经导入或下载、但尚未真正可用的缓存包，可重复执行。
+      </p>
+
+      <button class="btn btn-primary" id="rebuildIndexBtn" onclick="startRebuildIndex()">
+        🔧 开始重建本地缓存索引
+      </button>
+
+      <div class="progress-container" id="rebuildProgressContainer">
+        <div class="progress-header">
+          <span class="progress-phase" id="rebuildProgressPhase">准备中...</span>
+          <span class="progress-percentage" id="rebuildProgressPercentage">0%</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-bar-fill" id="rebuildProgressBar" style="width: 0%"></div>
+        </div>
+        <div class="progress-message" id="rebuildProgressMessage">等待开始...</div>
+      </div>
+
+      <div class="result-container" id="rebuildResultContainer">
+        <div class="result-icon" id="rebuildResultIcon">✅</div>
+        <div class="result-title" id="rebuildResultTitle">重建完成</div>
+        <div class="result-stats" id="rebuildResultStats"></div>
+        <div id="rebuildResultError" style="color: #d32f2f; text-align: center; margin-bottom: 15px;"></div>
+        <div style="text-align: center;">
+          <button class="btn btn-primary" onclick="resetRebuildIndex()">↩️ 再次重建</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 导入历史 -->
     <div class="card">
       <h2>📜 导入历史</h2>
@@ -581,6 +615,7 @@ export function getImportUIHTML(config: any): string {
     let selectedFile = null;
     let currentTaskId = null;
     let pollInterval = null;
+    let rebuildPollInterval = null;
 
     // 添加日志
     function addLog(message, type = 'info') {
@@ -818,6 +853,128 @@ export function getImportUIHTML(config: any): string {
       document.getElementById('localPathInput').value = '';
     }
 
+    // 从现有 storage 完全离线重建所有包的元数据和本地包列表
+    async function startRebuildIndex() {
+      const button = document.getElementById('rebuildIndexBtn');
+      button.disabled = true;
+      document.getElementById('rebuildProgressContainer').classList.add('visible');
+      document.getElementById('rebuildResultContainer').classList.remove('visible');
+      document.getElementById('rebuildProgressPhase').textContent = '扫描本地缓存';
+      document.getElementById('rebuildProgressPercentage').textContent = '0%';
+      document.getElementById('rebuildProgressBar').style.width = '0%';
+      document.getElementById('rebuildProgressMessage').textContent = '正在扫描 storage 中的包目录...';
+      addLog('开始扫描并重建本地缓存索引（不会访问上游）...', 'info');
+
+      try {
+        const response = await fetch('/_/healer/rebuild-index', { method: 'POST' });
+        const data = await response.json();
+
+        if (data.taskId && (data.success || response.status === 409)) {
+          addLog(
+            response.status === 409
+              ? '已有重建任务正在运行，继续显示其进度: ' + data.taskId
+              : '本地缓存重建任务已启动: ' + data.taskId,
+            response.status === 409 ? 'warning' : 'success'
+          );
+          startRebuildPolling(data.taskId);
+          return;
+        }
+
+        throw new Error(data.error || '启动重建失败');
+      } catch (error) {
+        addLog('启动本地缓存重建失败: ' + error.message, 'error');
+        showRebuildResult(null, error.message);
+        button.disabled = false;
+      }
+    }
+
+    function startRebuildPolling(taskId) {
+      if (rebuildPollInterval) {
+        clearInterval(rebuildPollInterval);
+      }
+
+      const poll = async () => {
+        try {
+          const response = await fetch('/_/healer/rebuild/status/' + encodeURIComponent(taskId));
+          const task = await response.json();
+          if (!response.ok) {
+            throw new Error(task.error || '查询重建状态失败');
+          }
+
+          updateRebuildProgress(task);
+          if (task.status !== 'completed' && task.status !== 'failed') {
+            return;
+          }
+
+          clearInterval(rebuildPollInterval);
+          rebuildPollInterval = null;
+          document.getElementById('rebuildIndexBtn').disabled = false;
+          showRebuildResult(task.result || null, task.error || '');
+
+          if (task.status === 'completed') {
+            addLog('本地缓存索引重建完成，共处理 ' + task.result.scanned + ' 个包', 'success');
+          } else {
+            addLog('本地缓存索引重建部分失败: ' + (task.error || '未知错误'), 'warning');
+          }
+        } catch (error) {
+          clearInterval(rebuildPollInterval);
+          rebuildPollInterval = null;
+          document.getElementById('rebuildIndexBtn').disabled = false;
+          addLog('查询重建状态失败: ' + error.message, 'error');
+          showRebuildResult(null, error.message);
+        }
+      };
+
+      poll();
+      rebuildPollInterval = setInterval(poll, 1000);
+    }
+
+    function updateRebuildProgress(task) {
+      const pct = Math.max(0, Math.min(100, Math.round(task.progress || 0)));
+      document.getElementById('rebuildProgressPhase').textContent =
+        task.status === 'pending' ? '等待执行' : '重建本地缓存';
+      document.getElementById('rebuildProgressPercentage').textContent = pct + '%';
+      document.getElementById('rebuildProgressBar').style.width = pct + '%';
+      document.getElementById('rebuildProgressMessage').textContent =
+        task.currentPackage
+          ? task.currentPackage + ' (' + task.current + '/' + task.total + ')'
+          : (task.message || '处理中...');
+    }
+
+    function showRebuildResult(result, error) {
+      const container = document.getElementById('rebuildResultContainer');
+      document.getElementById('rebuildProgressContainer').classList.remove('visible');
+      container.classList.add('visible');
+      container.classList.remove('success', 'error');
+      container.classList.add(error ? 'error' : 'success');
+      document.getElementById('rebuildResultIcon').textContent = error ? '⚠️' : '✅';
+      document.getElementById('rebuildResultTitle').textContent =
+        error ? (result ? '重建完成，部分包失败' : '重建失败') : '重建完成';
+
+      const stats = result || {
+        scanned: 0,
+        rebuilt: 0,
+        skipped: 0,
+        failed: 0,
+        localVersions: 0,
+        healedVersions: 0
+      };
+      document.getElementById('rebuildResultStats').innerHTML =
+        '<div class="result-stat"><div class="result-stat-value">' + stats.scanned + '</div><div class="result-stat-label">扫描包数</div></div>' +
+        '<div class="result-stat"><div class="result-stat-value">' + stats.rebuilt + '</div><div class="result-stat-label">已重建</div></div>' +
+        '<div class="result-stat"><div class="result-stat-value">' + stats.localVersions + '</div><div class="result-stat-label">本地版本</div></div>' +
+        '<div class="result-stat"><div class="result-stat-value">' + stats.healedVersions + '</div><div class="result-stat-label">补全版本</div></div>' +
+        '<div class="result-stat"><div class="result-stat-value">' + stats.skipped + '</div><div class="result-stat-label">已跳过</div></div>' +
+        '<div class="result-stat"><div class="result-stat-value">' + stats.failed + '</div><div class="result-stat-label">失败</div></div>';
+      document.getElementById('rebuildResultError').textContent = error || '';
+    }
+
+    function resetRebuildIndex() {
+      document.getElementById('rebuildProgressContainer').classList.remove('visible');
+      document.getElementById('rebuildResultContainer').classList.remove('visible');
+      document.getElementById('rebuildIndexBtn').disabled = false;
+    }
+
     // 开始轮询状态
     function startPolling(taskId) {
       if (pollInterval) {
@@ -961,4 +1118,3 @@ export function getImportUIHTML(config: any): string {
 </body>
 </html>`;
 }
-

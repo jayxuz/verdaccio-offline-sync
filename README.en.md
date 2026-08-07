@@ -40,6 +40,8 @@ English | [中文](./README.md)
 - **Concurrent Manifest Write Protection** - Serializes metadata from sync and rebuild operations through Verdaccio package storage, preventing concurrent direct `package.json` writes from overwriting each other
 - **Local Manifest Normalization** - Repairs missing or invalid `versions`, `dist-tags`, attachments, distfiles, and related map fields before reads and writes for compatibility with historical caches
 - **Scoped Tarball Filename Compatibility** - Supports both `package-x.y.z.tgz` and `scope-package-x.y.z.tgz` naming styles
+- **Special Platform Package Compatibility** - Supports Codex npm-alias platform versions, Claude Code standalone platform packages, and multi-part version suffixes such as `0.146.1-win32-x64`
+- **Historical Cache Rebuild** - Healer can rebuild metadata and the local package list entirely offline for previously imported or downloaded caches and can be run repeatedly
 - **Integrity Verification** - Auto-validates tarball SHA-1 checksums after download to prevent corrupt packages from polluting local cache; verifies file integrity during local version resolution and auto-removes corrupt files
 
 ## Plugin Components
@@ -410,6 +412,8 @@ Access `http://internal:4873/_/healer/ui` to open the import management interfac
 | Import Files | Copy files to storage directory |
 | Rebuild Metadata | Trigger automatic metadata rebuild |
 
+For packages that were imported or downloaded previously but never appeared in the local package list, use **Rebuild Local Cache Index** on the same page. It scans local storage only, never accesses an uplink, and is safe to run repeatedly.
+
 ## Architecture
 
 ```
@@ -491,6 +495,8 @@ Access `http://internal:4873/_/healer/ui` to open the import management interfac
 | `/_/healer/import/local` | POST | Import differential package from server local path |
 | `/_/healer/import/status/:taskId` | GET | Query import task status |
 | `/_/healer/import/history` | GET | Get import history |
+| `/_/healer/rebuild-index` | POST | Fully offline rebuild of all local cached packages and the package list |
+| `/_/healer/rebuild/status/:taskId` | GET | Query local cache rebuild task status |
 | `/_/healer/sync/:name` | POST | Sync metadata for a single package |
 | `/_/healer/sync/:scope/:name` | POST | Sync metadata for a scoped package |
 | `/_/healer/sync-all` | POST | Sync metadata for all local packages |

@@ -37,6 +37,10 @@
 - **清单规范化**：读写前将缺失或异常的 `versions`、`dist-tags`、`_attachments`、`_distfiles`、`_uplinks` 和 `time` 字段规范化为映射对象
 - **串行合并更新**：同一个包的并发元数据更新会通过 storage 排队并合并，避免一次同步覆盖另一次同步的结果
 
+### 平台后缀版本兼容性（v3.1.7）
+- **多段预发布版本识别**：正确识别 `0.146.1-win32-x64`、`0.146.1-linux-arm64-musl` 等平台版本，避免本地已有 tarball 被离线版本过滤遗漏
+- **独立平台包兼容**：继续支持 `claude-code-linux-x64-2.1.220.tgz` 等包名中包含平台信息的 tarball
+
 ### 代码质量
 - **现代 JavaScript**：ES2020+ 特性、async/await、可选链
 - **类型定义**：包含完整的 TypeScript 类型定义

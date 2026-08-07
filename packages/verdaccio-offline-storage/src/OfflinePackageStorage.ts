@@ -6,6 +6,7 @@ import semver from 'semver';
 import { Logger, Manifest, Callback } from '@verdaccio/types';
 import { OfflineStorageConfig } from './types';
 import { mergeLocalManifests, normalizeLocalManifest } from './manifest-utils';
+import { extractTarballVersion } from './tarball-version';
 
 // Import LocalFS from @verdaccio/local-storage-legacy
 // Verdaccio 6.x uses local-storage-legacy package
@@ -643,17 +644,7 @@ export class OfflinePackageStorage extends LocalFS {
   }
 
   private extractVersionFromTarballFilename(filename: string): string | null {
-    const baseName = filename.replace('.tgz', '');
-    const versionMatch = baseName.match(
-      /-(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?(?:\+[a-zA-Z0-9.]+)?)$/
-    );
-
-    if (!versionMatch) {
-      return null;
-    }
-
-    const version = versionMatch[1];
-    return semver.valid(version) ? version : null;
+    return extractTarballVersion(filename);
   }
 
   private extractFilenameFromTarballUrl(tarball?: string): string | undefined {

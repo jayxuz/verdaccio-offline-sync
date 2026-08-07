@@ -40,6 +40,8 @@
 - **清单并发写入保护** - 通过 Verdaccio package storage 串行持久化同步与重建产生的元数据，避免并发直接写入 `package.json` 时相互覆盖
 - **本地清单规范化** - 读写前修复缺失或异常的 `versions`、`dist-tags`、attachments、distfiles 等映射字段，提高历史缓存兼容性
 - **Scoped 包文件名兼容** - 同时兼容 `package-x.y.z.tgz` 与 `scope-package-x.y.z.tgz` 两种 tarball 命名
+- **特殊平台包兼容** - 支持 Codex 的 npm alias 平台版本和 Claude Code 独立平台包，并识别 `0.146.1-win32-x64` 等多段版本后缀
+- **历史缓存重建** - healer 可完全离线重建已经导入或下载的缓存元数据与本地包列表，并支持重复执行
 - **完整性校验** - 下载后自动校验 tarball SHA-1，防止损坏包污染本地缓存；本地版本解析时同步校验文件完整性，自动剔除损坏文件
 
 ## 插件组成
@@ -411,6 +413,8 @@ diff-export-2024-01-15T10-30-00.tar.gz
 | 导入文件 | 复制文件到 storage 目录 |
 | 重建元数据 | 触发元数据自动重建 |
 
+对于以前已经导入或下载、但没有进入本地包列表的缓存，可在同一页面点击“重建本地缓存索引”。该操作只扫描本地 storage，不访问上游，并可重复执行。
+
 ## 架构图
 
 ```
@@ -492,6 +496,8 @@ diff-export-2024-01-15T10-30-00.tar.gz
 | `/_/healer/import/local` | POST | 从服务器本地路径导入差分包 |
 | `/_/healer/import/status/:taskId` | GET | 查询导入任务状态 |
 | `/_/healer/import/history` | GET | 获取导入历史 |
+| `/_/healer/rebuild-index` | POST | 完全离线重建所有本地缓存包及包列表 |
+| `/_/healer/rebuild/status/:taskId` | GET | 查询本地缓存重建任务状态 |
 | `/_/healer/sync/:name` | POST | 同步单个包的元数据 |
 | `/_/healer/sync/:scope/:name` | POST | 同步 scoped 包的元数据 |
 | `/_/healer/sync-all` | POST | 同步所有本地包的元数据 |

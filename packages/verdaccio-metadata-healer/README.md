@@ -20,11 +20,14 @@ A Verdaccio plugin suite for automatic metadata healing, metadata sync, and diff
 - **Storage Access Fix**: Fixed package storage retrieval method, using `_getLocalStorage` instead of `getPackageStorage` for correct storage instance access
 - **Storage-Coordinated Metadata Sync** (v1.1.7): Remote metadata is prepared and merged with local attachments, distfiles, and valid local identity fields before Verdaccio package storage persists it, avoiding direct-file write races
 - **Deployment Boundary** (v1.1.7): Run healer only on the offline side; do not let online ingest and offline healer write to the same storage directory
+- **Platform Version Recovery** (v1.1.8): Tarball scans recognize multi-part platform versions such as `0.146.1-win32-x64` and standalone platform tarballs such as `claude-code-linux-x64-2.1.220.tgz`
 
 ### Import Middleware
 - **Differential Import**: Import packages from export archives created by `verdaccio-ingest-middleware`
 - **Local Path Import** (New): Import `.tar.gz` packages directly from server local paths via `/local` endpoint
 - **Web UI**: Built-in interface for uploading and managing imports
+- **Local Cache Index Rebuild**: Fully offline scan of historical storage that rebuilds metadata, `latest` tags, and the local package list; safe to run repeatedly
+- **Historical Cache Activation** (v1.1.8): Differential imports immediately persist and register affected packages, while the Web UI and `/_/healer/rebuild-index` can repair previously imported or downloaded caches
 - **Progress Tracking**: Real-time progress updates during import
 - **Checksum Validation**: Validates file integrity during import
 - **Import History**: Tracks all import operations
@@ -114,6 +117,8 @@ All endpoints are prefixed with `/_/healer/`.
 | POST | `/import/local` | Import `.tar.gz` packages from server local path |
 | GET | `/import/status/:taskId` | Query import task status |
 | GET | `/import/history` | Get import history |
+| POST | `/rebuild-index` | Rebuild metadata and package list for all local cached packages without uplink access (async task) |
+| GET | `/rebuild/status/:taskId` | Query local cache rebuild task status |
 
 ### Metadata Sync Endpoints
 
@@ -189,12 +194,26 @@ curl http://localhost:4873/_/healer/sync/status/task-xxx
 curl http://localhost:4873/_/healer/packages
 ```
 
+### Rebuild Historical Local Cache
+
+This operation reads only local storage and never accesses an uplink. Use it for packages that were previously imported or downloaded but never appeared in the local package list.
+
+```bash
+# Start a full rebuild; it is safe to run repeatedly
+curl -X POST http://localhost:4873/_/healer/rebuild-index
+# Response: {"success": true, "taskId": "rebuild-xxx", "totalPackages": 100}
+
+# Query progress and per-package results
+curl http://localhost:4873/_/healer/rebuild/status/rebuild-xxx
+```
+
 ## Web UI
 
 Access the management interface at `http://localhost:4873/_/healer/ui` for:
 
 - Drag-and-drop file upload
 - Import from server local path
+- Fully offline rebuild of historical local cache index
 - Real-time import progress
 - Import history viewing
 - Task status monitoring

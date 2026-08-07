@@ -11,7 +11,16 @@ import { ImportHandler } from './import-handler';
 import { ImportedPackageRefresher } from './imported-package-refresher';
 import { MetadataSyncer, SyncResult } from './metadata-syncer';
 import { getImportUIHTML } from './import-ui';
-import { HealerConfig, TarballInfo, ImportTaskStatus, ImportOptions, ImportProgress } from './types';
+import {
+  HealerConfig,
+  TarballInfo,
+  ImportTaskStatus,
+  ImportOptions,
+  ImportProgress,
+  PackageRebuildResult,
+  RebuildResult,
+  RebuildTaskStatus
+} from './types';
 
 /**
  * 同步任务状态
@@ -40,11 +49,14 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
   private initialized: boolean = false;
   // Import middleware 相关
   private importHandler!: ImportHandler;
+  private importedPackageRefresher!: ImportedPackageRefresher;
   private tasks: Map<string, ImportTaskStatus> = new Map();
   private upload!: multer.Multer;
   // 元数据同步相关
   private syncer!: MetadataSyncer;
   private syncTasks: Map<string, SyncTaskStatus> = new Map();
+  private rebuildTasks: Map<string, RebuildTaskStatus> = new Map();
+  private activeRebuildTaskId?: string;
   private upstreamRegistry: string = 'https://registry.npmmirror.com';
   private readonly defaultSyncConcurrency = 5;
   // Verdaccio 存储实例
@@ -366,7 +378,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
       return;
     }
 
-    const importedPackageRefresher = new ImportedPackageRefresher(
+    this.importedPackageRefresher = new ImportedPackageRefresher(
       config,
       this.storagePath,
       this.logger,
@@ -378,7 +390,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
       async (packageNames, onProgress) => {
         // 导入可能覆盖已有 tarball，先清除 filter 自身的扫描与哈希缓存。
         this.clearCache();
-        await importedPackageRefresher.refresh(packageNames, onProgress);
+        await this.importedPackageRefresher.refresh(packageNames, onProgress);
       }
     );
 
@@ -406,6 +418,8 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
     router.post('/healer/import/local', express.json(), this.handleLocalImport.bind(this));
     router.get('/healer/import/status/:taskId', this.handleStatus.bind(this));
     router.get('/healer/import/history', this.handleHistory.bind(this));
+    router.post('/healer/rebuild-index', this.handleRebuildIndex.bind(this));
+    router.get('/healer/rebuild/status/:taskId', this.handleRebuildStatus.bind(this));
     router.get('/healer/ui', this.handleWebUI.bind(this));
 
     // 元数据同步相关路由
@@ -418,6 +432,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
     app.use('/_', router);
 
     this.logger.info('Import middleware registered at /_/healer/ui');
+    this.logger.info('Local rebuild API registered at /_/healer/rebuild-index');
     this.logger.info('Sync API registered at /_/healer/sync/:packageName');
   }
 
@@ -779,6 +794,205 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
         '[Sync] Failed to scan local packages: @{error}'
       );
       throw error;
+    }
+  }
+
+  /**
+   * 启动完全离线的本地缓存重建任务。
+   * 不访问 uplink，只扫描 storage 中现有的 package.json 与 tarball。
+   */
+  private async handleRebuildIndex(req: Request, res: Response): Promise<void> {
+    const activeTask = this.activeRebuildTaskId
+      ? this.rebuildTasks.get(this.activeRebuildTaskId)
+      : undefined;
+    if (activeTask && (activeTask.status === 'pending' || activeTask.status === 'running')) {
+      res.status(409).json({
+        success: false,
+        taskId: activeTask.taskId,
+        error: '已有本地缓存重建任务正在运行'
+      });
+      return;
+    }
+
+    // 在异步扫描之前先占用任务槽，避免并发请求同时越过上面的检查。
+    const taskId = this.createRebuildTask(0);
+    this.activeRebuildTaskId = taskId;
+
+    let packageNames: string[];
+    try {
+      packageNames = await this.scanLocalPackages();
+    } catch (error: any) {
+      this.updateRebuildTask(taskId, {
+        status: 'failed',
+        error: error.message,
+        message: '扫描本地缓存失败'
+      });
+      if (this.activeRebuildTaskId === taskId) {
+        this.activeRebuildTaskId = undefined;
+      }
+      res.status(500).json({
+        success: false,
+        taskId,
+        error: `扫描本地缓存失败: ${error.message}`
+      });
+      return;
+    }
+
+    this.updateRebuildTask(taskId, { total: packageNames.length });
+    this.executeRebuildAll(taskId, packageNames).catch((error: any) => {
+      this.updateRebuildTask(taskId, {
+        status: 'failed',
+        error: error.message,
+        message: '本地缓存重建失败'
+      });
+      if (this.activeRebuildTaskId === taskId) {
+        this.activeRebuildTaskId = undefined;
+      }
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      totalPackages: packageNames.length,
+      message: 'Local cache rebuild task started'
+    });
+  }
+
+  private async executeRebuildAll(taskId: string, packageNames: string[]): Promise<void> {
+    const uniquePackageNames = Array.from(new Set(packageNames));
+    const total = uniquePackageNames.length;
+    let completed = 0;
+
+    this.clearCache();
+    this.updateRebuildTask(taskId, {
+      status: 'running',
+      progress: 0,
+      current: 0,
+      total,
+      message: total > 0 ? '正在扫描并重建本地缓存...' : '本地缓存为空'
+    });
+
+    try {
+      const results = await this.mapWithConcurrency(
+        uniquePackageNames,
+        this.getSyncConcurrency(),
+        async (packageName): Promise<PackageRebuildResult> => {
+          this.updateRebuildTask(taskId, { currentPackage: packageName });
+
+          let result: PackageRebuildResult;
+          try {
+            result = await this.importedPackageRefresher.rebuildPackage(packageName);
+          } catch (error: any) {
+            result = {
+              success: false,
+              packageName,
+              tarballs: 0,
+              localVersions: 0,
+              healedVersions: 0,
+              skipped: false,
+              error: error.message
+            };
+          }
+
+          completed++;
+          this.updateRebuildTask(taskId, {
+            current: completed,
+            progress: total === 0 ? 100 : Math.round((completed / total) * 100),
+            currentPackage: packageName,
+            message: `正在重建 ${packageName} (${completed}/${total})`
+          });
+          return result;
+        }
+      );
+
+      const result = this.summarizeRebuildResults(total, results);
+      const failedPackages = results.filter(({ success }) => !success);
+      this.clearCache();
+      this.updateRebuildTask(taskId, {
+        status: failedPackages.length > 0 ? 'failed' : 'completed',
+        progress: 100,
+        current: total,
+        total,
+        currentPackage: undefined,
+        message: failedPackages.length > 0
+          ? `重建完成，${failedPackages.length} 个包失败`
+          : '本地缓存重建完成',
+        result,
+        error: failedPackages.length > 0
+          ? failedPackages
+              .map(({ packageName, error }) => `${packageName}: ${error || '未知错误'}`)
+              .join('; ')
+          : undefined
+      });
+
+      this.logger.info(
+        {
+          taskId,
+          scanned: result.scanned,
+          rebuilt: result.rebuilt,
+          skipped: result.skipped,
+          failed: result.failed,
+          healedVersions: result.healedVersions
+        },
+        '[Rebuild] Completed local cache rebuild: scanned=@{scanned}, rebuilt=@{rebuilt}, skipped=@{skipped}, failed=@{failed}, healed=@{healedVersions}'
+      );
+    } finally {
+      if (this.activeRebuildTaskId === taskId) {
+        this.activeRebuildTaskId = undefined;
+      }
+    }
+  }
+
+  private summarizeRebuildResults(
+    scanned: number,
+    results: PackageRebuildResult[]
+  ): RebuildResult {
+    return {
+      scanned,
+      rebuilt: results.filter(({ success, skipped }) => success && !skipped).length,
+      skipped: results.filter(({ skipped }) => skipped).length,
+      failed: results.filter(({ success }) => !success).length,
+      localVersions: results.reduce((sum, item) => sum + item.localVersions, 0),
+      healedVersions: results.reduce((sum, item) => sum + item.healedVersions, 0),
+      results
+    };
+  }
+
+  private handleRebuildStatus(req: Request, res: Response): void {
+    const task = this.rebuildTasks.get(req.params.taskId);
+    if (!task) {
+      res.status(404).json({ success: false, error: 'Task not found' });
+      return;
+    }
+    res.json(task);
+  }
+
+  private createRebuildTask(total: number): string {
+    // 重建可重复执行，但只保留最近的任务状态，避免常驻进程无限积累记录。
+    while (this.rebuildTasks.size >= 20) {
+      const oldestTaskId = this.rebuildTasks.keys().next().value as string | undefined;
+      if (!oldestTaskId) break;
+      this.rebuildTasks.delete(oldestTaskId);
+    }
+
+    const taskId = `rebuild-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    this.rebuildTasks.set(taskId, {
+      taskId,
+      status: 'pending',
+      progress: 0,
+      current: 0,
+      total
+    });
+    return taskId;
+  }
+
+  private updateRebuildTask(
+    taskId: string,
+    updates: Partial<RebuildTaskStatus>
+  ): void {
+    const task = this.rebuildTasks.get(taskId);
+    if (task) {
+      Object.assign(task, updates);
     }
   }
 

@@ -6,6 +6,7 @@ import { createHash } from 'crypto';
 import pLimit from 'p-limit';
 import { Logger, Manifest, Version } from '@verdaccio/types';
 import { CachedPackage, IngestConfig } from './types';
+import { extractTarballVersion } from './tarball-version';
 
 /**
  * 存储扫描器 - 扫描本地已缓存的包
@@ -186,7 +187,7 @@ export class StorageScanner {
           continue;
         }
 
-        const version = this.extractVersionFromFilename(packageName, file);
+        const version = extractTarballVersion(file);
         if (version) {
           versions.push(version);
         } else {
@@ -248,22 +249,6 @@ export class StorageScanner {
     }
     // 非 scoped 包直接返回
     return path.join(this.storagePath, packageName);
-  }
-
-  /**
-   * 从文件名中提取版本号
-   */
-  private extractVersionFromFilename(packageName: string, filename: string): string | null {
-    const baseName = filename.replace('.tgz', '');
-
-    // 处理不同格式的 tarball 文件名
-    // 例如: lodash-4.17.21.tgz, @scope-package-1.0.0.tgz
-    const versionMatch = baseName.match(/-(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)$/);
-    if (versionMatch) {
-      return versionMatch[1];
-    }
-
-    return null;
   }
 
   /**

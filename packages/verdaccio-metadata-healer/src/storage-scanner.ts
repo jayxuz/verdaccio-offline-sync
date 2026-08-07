@@ -2,6 +2,7 @@ import { readdir, stat } from 'fs/promises';
 import path from 'path';
 import { Logger } from '@verdaccio/types';
 import { HealerConfig, TarballInfo, ScanCacheEntry } from './types';
+import { extractTarballVersion } from './tarball-version';
 
 /**
  * 存储扫描器 - 扫描存储目录中的 tarball 文件
@@ -40,7 +41,7 @@ export class StorageScanner {
       for (const file of files) {
         if (!file.endsWith('.tgz')) continue;
 
-        const version = this.extractVersionFromFilename(packageName, file);
+        const version = extractTarballVersion(file);
         if (!version) continue;
 
         const filePath = path.join(packageDir, file);
@@ -89,28 +90,6 @@ export class StorageScanner {
    */
   private getPackageDir(packageName: string): string {
     return path.join(this.storagePath, packageName);
-  }
-
-  /**
-   * 从文件名中提取版本号
-   */
-  private extractVersionFromFilename(
-    packageName: string,
-    filename: string
-  ): string | null {
-    const baseName = filename.replace('.tgz', '');
-
-    // 尝试从文件名中提取版本号
-    // 格式: package-name-1.0.0.tgz 或 scope-package-1.0.0.tgz
-    const versionMatch = baseName.match(
-      /-(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?(?:\+[a-zA-Z0-9.]+)?)$/
-    );
-
-    if (versionMatch) {
-      return versionMatch[1];
-    }
-
-    return null;
   }
 
   /**

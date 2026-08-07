@@ -182,6 +182,46 @@ export type ImportMetadataRebuilder = (
   onProgress?: ImportRebuildProgressCallback
 ) => Promise<void>;
 
+/** 单个本地包的离线重建结果 */
+export interface PackageRebuildResult {
+  success: boolean;
+  packageName: string;
+  /** 扫描识别到的本地 tarball 数 */
+  tarballs: number;
+  /** 重建后 manifest 中实际可用的本地版本数 */
+  localVersions: number;
+  /** 本次从 tarball 补入 manifest 的版本数 */
+  healedVersions: number;
+  latest?: string;
+  /** 目录中没有可识别 tarball 时为 true */
+  skipped: boolean;
+  error?: string;
+}
+
+/** 一次全量本地缓存重建的汇总 */
+export interface RebuildResult {
+  scanned: number;
+  rebuilt: number;
+  skipped: number;
+  failed: number;
+  localVersions: number;
+  healedVersions: number;
+  results: PackageRebuildResult[];
+}
+
+/** 全量本地缓存重建任务状态 */
+export interface RebuildTaskStatus {
+  taskId: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  progress: number;
+  current: number;
+  total: number;
+  currentPackage?: string;
+  message?: string;
+  result?: RebuildResult;
+  error?: string;
+}
+
 /**
  * 导出清单（从导出包中读取）
  */

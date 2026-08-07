@@ -4,7 +4,11 @@ import { Logger, Manifest } from '@verdaccio/types';
 import { MetadataPatcher } from './metadata-patcher';
 import { ShasumCache } from './shasum-cache';
 import { StorageScanner } from './storage-scanner';
-import { HealerConfig, ImportRebuildProgressCallback } from './types';
+import {
+  HealerConfig,
+  ImportRebuildProgressCallback,
+  PackageRebuildResult
+} from './types';
 
 /**
  * Rebuilds imported package metadata and registers the package in Verdaccio's
@@ -58,7 +62,7 @@ export class ImportedPackageRefresher {
           }
 
           const packageName = uniqueNames[index];
-          await this.refreshPackage(packageName);
+          await this.rebuildPackage(packageName);
           completed++;
           onProgress?.(completed, total, packageName);
         }
@@ -68,7 +72,7 @@ export class ImportedPackageRefresher {
     await Promise.all(workers);
   }
 
-  private async refreshPackage(packageName: string): Promise<void> {
+  async rebuildPackage(packageName: string): Promise<PackageRebuildResult> {
     this.scanner.clearCache(packageName);
     const tarballs = await this.scanner.scanPackageTarballs(packageName);
     if (tarballs.length === 0) {
@@ -76,7 +80,14 @@ export class ImportedPackageRefresher {
         { packageName },
         '[Import] Skipping metadata rebuild for @{packageName}: no local tarballs'
       );
-      return;
+      return {
+        success: true,
+        packageName,
+        tarballs: 0,
+        localVersions: 0,
+        healedVersions: 0,
+        skipped: true
+      };
     }
 
     const manifest = await this.readLocalManifest(packageName) || {
@@ -89,6 +100,9 @@ export class ImportedPackageRefresher {
     const rebuilt = missingVersions.length > 0
       ? await this.patcher.patchManifest(manifest, missingVersions, this.shasumCache)
       : manifest;
+    const healedVersions = missingVersions.filter(
+      ({ version }) => Boolean(rebuilt.versions?.[version])
+    ).length;
 
     this.patcher.updateDistTags(rebuilt, tarballs.map(({ version }) => version));
     rebuilt.time = rebuilt.time || {};
@@ -98,9 +112,22 @@ export class ImportedPackageRefresher {
     await this.registerPackage(packageName);
 
     this.logger.info(
-      { packageName, versions: tarballs.length, healed: missingVersions.length },
+      { packageName, versions: tarballs.length, healed: healedVersions },
       '[Import] Rebuilt @{packageName}: @{versions} local versions, @{healed} healed'
     );
+
+    const localVersionSet = new Set(tarballs.map(({ version }) => version));
+    const localVersions = Object.keys(rebuilt.versions || {})
+      .filter((version) => localVersionSet.has(version)).length;
+    return {
+      success: true,
+      packageName,
+      tarballs: tarballs.length,
+      localVersions,
+      healedVersions,
+      latest: rebuilt['dist-tags']?.latest,
+      skipped: false
+    };
   }
 
   private async readLocalManifest(packageName: string): Promise<Manifest | null> {

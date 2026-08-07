@@ -21,6 +21,7 @@
 - **Scoped 包 tarball 命名兼容**（v1.2.5）：`/rebuild-index` 同时支持 `package-x.y.z.tgz` 与 `scope-package-x.y.z.tgz` 两种文件名格式
 - **元数据同步与重建增强**（v1.2.5）：`/sync` 会保存新下载包的元数据，`/rebuild-index` 支持创建缺失的 `package.json` 并刷新本地 `dist-tags.latest`
 - **清单串行持久化**（v1.2.8）：同步、下载和重建产生的元数据统一通过 Verdaccio package storage 持久化，不再直接写入 `package.json`，避免并发操作相互覆盖
+- **平台包解析修复**（v1.2.9）：正确解析 npm alias 形式的 Codex 平台版本（如 `npm:@openai/codex@0.146.1-win32-x64`）和 Claude Code 独立平台包，并识别带多段平台后缀的 tarball 版本
 
 ## 安装
 
