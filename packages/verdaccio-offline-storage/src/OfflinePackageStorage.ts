@@ -16,12 +16,17 @@ try {
   LocalFS = require('@verdaccio/local-storage-legacy/lib/local-fs').default;
 } catch {
   try {
-    // Fallback to @verdaccio/local-storage (newer versions)
+    // Fallback to @verdaccio/local-storage (newer versions, compiled to build/)
     LocalFS = require('@verdaccio/local-storage').LocalDriver ||
-              require('@verdaccio/local-storage/lib/local-fs').default;
-  } catch (e) {
-    console.error('[verdaccio-offline-storage] Failed to load LocalFS:', e);
-    throw new Error('Could not load LocalFS from @verdaccio/local-storage-legacy or @verdaccio/local-storage');
+              require('@verdaccio/local-storage/build/local-fs').default;
+  } catch {
+    try {
+      // Older @verdaccio/local-storage releases were compiled to lib/
+      LocalFS = require('@verdaccio/local-storage/lib/local-fs').default;
+    } catch (e) {
+      console.error('[verdaccio-offline-storage] Failed to load LocalFS:', e);
+      throw new Error('Could not load LocalFS from @verdaccio/local-storage-legacy or @verdaccio/local-storage');
+    }
   }
 }
 

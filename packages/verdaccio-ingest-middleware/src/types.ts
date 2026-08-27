@@ -23,6 +23,8 @@ export interface IngestConfig {
   verifyChecksum?: boolean;
   /** tarball 最小体积（字节），低于此值视为损坏（默认 128） */
   minTarballSize?: number;
+  /** 缓存状态扫描快照有效期（秒），过期后下一次 /ingest/cache 请求触发后台重建（默认 600） */
+  scanCacheTtlSeconds?: number;
 }
 
 /**
@@ -116,7 +118,12 @@ export interface RefreshedMetadata {
 export interface PackageToDownload {
   name: string;
   version: string;
-  reason: 'newer-version' | 'missing-dependency' | 'platform-binary' | 'sibling-version';
+  reason:
+    | 'newer-version'
+    | 'missing-dependency'
+    | 'platform-binary'
+    | 'sibling-version'
+    | 'integrity-repair';
   /** 被哪个包依赖（用于追踪依赖链） */
   requiredBy?: string;
 }
@@ -153,6 +160,8 @@ export interface PackageDownloadStatus {
   size?: number;
   /** 下载是否通过了 SHA-1 校验 */
   verified?: boolean;
+  /** 失败原因是否为上游已下架/不存在（重试无效） */
+  upstreamMissing?: boolean;
 }
 
 /**
@@ -190,6 +199,103 @@ export interface CacheStatus {
     versions: string[];
     latestCached: string;
   }>;
+}
+
+// ==================== 完整性检查与修复相关类型 ====================
+
+/**
+ * 修复版本的选取原因
+ */
+export type RepairReason = 'dist-tag-latest' | 'major-latest' | 'dependent-range';
+
+/**
+ * 单个被选中待修复的版本
+ */
+export interface SelectedRepairVersion {
+  version: string;
+  /** 命中了哪些选取规则（可多个） */
+  reasons: RepairReason[];
+}
+
+/**
+ * 单个残缺包的修复计划
+ */
+export interface RepairPlanEntry {
+  name: string;
+  /** 元数据中列出的版本总数（仅作展示） */
+  metadataVersionCount: number;
+  /** 智能模式选中待下载的版本 */
+  selectedVersions: SelectedRepairVersion[];
+}
+
+/**
+ * 无法自动修复的包
+ */
+export interface UnrepairablePackage {
+  name: string;
+  reason: string;
+}
+
+/**
+ * 完整性扫描结果
+ */
+export interface RepairScanResult {
+  scanId: string;
+  /** 扫描到的包目录总数 */
+  scanned: number;
+  /** 有有效 tarball 的健康包数 */
+  healthy: number;
+  /** 有元数据但零 tarball 的残缺包数 */
+  incompleteCount: number;
+  /** 智能模式合计待下载版本数 */
+  totalVersionsToDownload: number;
+  plans: RepairPlanEntry[];
+  unrepairable: UnrepairablePackage[];
+  /** 本次扫描使用的选项（回显，供修复阶段参考） */
+  options?: {
+    includeDependents?: boolean;
+    includePrerelease?: boolean;
+    versionScope?: 'smart' | 'latest';
+  };
+  timestamp: number;
+}
+
+/**
+ * 完整性扫描请求
+ */
+export interface RepairScanRequest {
+  options?: {
+    /** 是否收集本地正常包对残缺包的依赖范围（默认 true；versionScope 为 'latest' 时忽略） */
+    includeDependents?: boolean;
+    /** 是否允许选中 prerelease 版本（默认 false） */
+    includePrerelease?: boolean;
+    /**
+     * 选取范围：
+     * - 'smart'：latest + 每 major 最新 + 依赖命中版本
+     * - 'latest'（默认）：仅 dist-tags.latest 指向的版本
+     */
+    versionScope?: 'smart' | 'latest';
+  };
+}
+
+/**
+ * 修复请求
+ */
+export interface RepairRequest {
+  /** 扫描结果 ID（主路径） */
+  scanId?: string;
+  /** 显式指定包列表（旁路，仿 DownloadRequest） */
+  packages?: PackageToDownload[];
+}
+
+/**
+ * 修复结果
+ */
+export interface RepairResult extends DownloadBatchResult {
+  /** 本轮成功修复（至少一个版本下载成功）的包数 */
+  repairedPackages: number;
+  /** 上游已下架/不存在的失败项子集（重试无效） */
+  upstreamMissing: PackageToDownload[];
 }
 
 /**

@@ -43,6 +43,7 @@ English | [中文](./README.md)
 - **Special Platform Package Compatibility** - Supports Codex npm-alias platform versions, Claude Code standalone platform packages, and multi-part version suffixes such as `0.146.1-win32-x64`
 - **Historical Cache Rebuild** - Healer can rebuild metadata and the local package list entirely offline for previously imported or downloaded caches and can be run repeatedly
 - **Integrity Verification** - Auto-validates tarball SHA-1 checksums after download to prevent corrupt packages from polluting local cache; verifies file integrity during local version resolution and auto-removes corrupt files
+- **Integrity Check & Repair** - One-click scan for incomplete packages that have metadata but zero tarballs (produced by unconfirmed analysis pre-writes, proxy metadata caching, etc.), smartly selects latest, per-major newest, and dependency-hit versions to re-download, with 404 classification and retry support
 
 ## Plugin Components
 
@@ -98,6 +99,27 @@ $V_PATH/
 ```
 
 > Tip: Use different configuration files to distinguish between online/offline environments. See configuration examples below.
+
+#### Build and Publish the Docker Image
+
+Docker tags are read automatically from the root `package.json` version. For example, version `1.2.9` builds and pushes both:
+
+- `jayxuz/verdaccio-offline-sync:1.2.9`
+- `jayxuz/verdaccio-offline-sync:latest`
+
+```bash
+# Sign in to Docker Hub before the first publish
+docker login
+
+# Build both tags only
+npm run docker:build
+
+# Push both previously built tags
+npm run docker:push
+
+# Build and push
+npm run docker:publish
+```
 
 ---
 

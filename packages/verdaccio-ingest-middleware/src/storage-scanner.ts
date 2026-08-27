@@ -9,6 +9,17 @@ import { CachedPackage, IngestConfig } from './types';
 import { extractTarballVersion } from './tarball-version';
 
 /**
+ * 包完整性信息（目录级轻量探测结果）
+ */
+export interface PackageIntegrityInfo {
+  name: string;
+  /** 通过 min-size 校验且能解析出版本号的有效 tarball 版本列表 */
+  tarballVersions: string[];
+  /** package.json 存在且可解析 */
+  hasMetadata: boolean;
+}
+
+/**
  * 存储扫描器 - 扫描本地已缓存的包
  */
 export class StorageScanner {
@@ -232,6 +243,134 @@ export class StorageScanner {
       }
       return null;
     }
+  }
+
+  /**
+   * 扫描所有包的完整性（目录级轻量探测，不解析依赖）
+   *
+   * 与 scanAllPackages 的区别：scanAllPackages 以 tarball 为准，零 tarball 的包
+   * 返回 null（对依赖分析不可见）；本方法额外保留"有 package.json 但零有效
+   * tarball"的残缺包，用于完整性检查与修复。
+   */
+  async scanAllPackageIntegrity(
+    onProgress?: (processed: number, total: number, current: string) => void
+  ): Promise<PackageIntegrityInfo[]> {
+    let packageNames: string[];
+    try {
+      packageNames = await this.listPackageDirs();
+    } catch (error: any) {
+      this.logger.error(
+        { error: error.message },
+        'Failed to list storage directories: @{error}'
+      );
+      return [];
+    }
+
+    const limit = pLimit(this.getScanConcurrency());
+    const total = packageNames.length;
+    let processed = 0;
+
+    const results = await Promise.all(
+      packageNames.map((packageName) =>
+        limit(async () => {
+          const info = await this.probePackageIntegrity(packageName);
+          processed++;
+          if (onProgress) {
+            onProgress(processed, total, packageName);
+          }
+          return info;
+        })
+      )
+    );
+
+    return results.filter((info): info is PackageIntegrityInfo => info !== null);
+  }
+
+  /**
+   * 枚举存储中的所有包目录（scoped 展开为 @scope/name）
+   */
+  private async listPackageDirs(): Promise<string[]> {
+    const names: string[] = [];
+    const entries = await readdir(this.storagePath, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) {
+        continue;
+      }
+
+      if (entry.name.startsWith('@')) {
+        const scopePath = path.join(this.storagePath, entry.name);
+        let scopedEntries;
+        try {
+          scopedEntries = await readdir(scopePath, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const sub of scopedEntries) {
+          if (sub.isDirectory() && !sub.name.startsWith('.')) {
+            names.push(`${entry.name}/${sub.name}`);
+          }
+        }
+      } else {
+        names.push(entry.name);
+      }
+    }
+
+    return names;
+  }
+
+  /**
+   * 探测单个包的完整性：统计有效 tarball 版本、探测 package.json 是否可用
+   */
+  private async probePackageIntegrity(packageName: string): Promise<PackageIntegrityInfo | null> {
+    const packagePath = this.getPackagePath(packageName);
+
+    let files: string[];
+    try {
+      files = await readdir(packagePath);
+    } catch {
+      return null;
+    }
+
+    const tgzFiles = files.filter((f) => f.endsWith('.tgz'));
+    const hasMetadataFile = files.includes('package.json');
+    // 空目录/非包目录不纳入结果
+    if (tgzFiles.length === 0 && !hasMetadataFile) {
+      return null;
+    }
+
+    // 与 scanPackage 相同的有效性校验：min-size + 可提取版本
+    const minSize = this.getMinTarballSize();
+    const tarballVersions: string[] = [];
+    for (const file of tgzFiles) {
+      const filePath = path.join(packagePath, file);
+      try {
+        const fileStat = await stat(filePath);
+        if (fileStat.size < minSize) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+
+      const version = extractTarballVersion(file);
+      if (version) {
+        tarballVersions.push(version);
+      }
+    }
+
+    // 只探测"存在且可解析"，不保留内容（省内存）
+    let hasMetadata = false;
+    if (hasMetadataFile) {
+      try {
+        JSON.parse(await readFile(path.join(packagePath, 'package.json'), 'utf-8'));
+        hasMetadata = true;
+      } catch {
+        hasMetadata = false;
+      }
+    }
+
+    return { name: packageName, tarballVersions, hasMetadata };
   }
 
   /**

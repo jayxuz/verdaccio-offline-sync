@@ -599,7 +599,7 @@ export function getWebUIHTML(config: any): string {
           </div>
           <div class="stat-item">
             <div class="stat-value" id="lastSync">-</div>
-            <div class="stat-label">上次同步</div>
+            <div class="stat-label">统计更新于</div>
           </div>
         </div>
         <button class="btn btn-primary" onclick="refreshCacheStatus()">
@@ -701,6 +701,135 @@ export function getWebUIHTML(config: any): string {
         <h3 style="margin-bottom: 10px; color: #2c5364;">本地包列表 <button class="btn btn-warning" onclick="hidePackageList()" style="padding: 3px 10px; font-size: 12px;">关闭</button></h3>
         <div class="package-list" id="syncPkgListContainer">
           <p style="color: #666; text-align: center; padding: 20px;">加载中...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 完整性检查与修复 -->
+    <div class="card" id="repairCard">
+      <h2>🩹 完整性检查与修复</h2>
+      <p style="color: #666; margin-bottom: 15px; font-size: 13px;">
+        扫描"有元数据（package.json）但没有任何 tarball"的残缺包并补下载。
+        修复完成后，如需这些包的可选依赖/对等依赖（含 Linux x64、Windows x64 平台二进制），
+        再执行一次下方「同步配置」的分析下载即可（勾选"包含可选依赖、包含对等依赖"）。
+      </p>
+      <div class="form-group">
+        <label>下载范围</label>
+        <div class="option-row">
+          <label><input type="radio" name="repairVersionScope" value="latest" checked><span>仅最新版本</span></label>
+          <button class="help-btn" type="button">?<span class="tooltip">每个残缺包只下载 dist-tags.latest 指向的版本，量最小、速度最快（推荐）</span></button>
+        </div>
+        <div class="option-row">
+          <label><input type="radio" name="repairVersionScope" value="smart"><span>智能模式</span></label>
+          <button class="help-btn" type="button">?<span class="tooltip">latest + 每个大版本的最新版 + 被本地其他包依赖范围命中的版本。更完整但下载量可能大很多</span></button>
+        </div>
+      </div>
+      <div style="margin-bottom: 15px;">
+        <button class="btn btn-primary" onclick="startRepairScan()" id="repairScanBtn">
+          🔍 开始扫描
+        </button>
+      </div>
+
+      <!-- 扫描进度 -->
+      <div id="repairScanProgress" class="detailed-progress hidden">
+        <div class="progress-header">
+          <span class="progress-phase" id="repairScanPhase">准备中...</span>
+          <span class="progress-percentage" id="repairScanPercentage">0%</span>
+        </div>
+        <div class="progress-bar-large">
+          <div class="progress-bar-fill" id="repairScanProgressBar" style="width: 0%"></div>
+        </div>
+        <div class="progress-details">
+          <div class="progress-detail-item">
+            <div class="progress-detail-value" id="repairScanProcessed">0</div>
+            <div class="progress-detail-label">已处理</div>
+          </div>
+          <div class="progress-detail-item">
+            <div class="progress-detail-value" id="repairScanTotal">0</div>
+            <div class="progress-detail-label">总数</div>
+          </div>
+          <div class="progress-detail-item">
+            <div class="progress-detail-value" id="repairScanETA">--</div>
+            <div class="progress-detail-label">预计剩余</div>
+          </div>
+        </div>
+        <div class="progress-current-pkg" id="repairScanCurrentPkg">等待开始...</div>
+      </div>
+
+      <!-- 扫描预览 -->
+      <div id="repairPreview" class="analysis-result hidden">
+        <div class="analysis-header">
+          <h3 style="margin: 0; color: #2c5364;">扫描结果 <span id="repairScopeLabel" style="font-size: 13px; color: #666;"></span></h3>
+          <div class="analysis-stats">
+            <div class="analysis-stat">
+              <div class="analysis-stat-value" id="repairIncompleteCount">0</div>
+              <div class="analysis-stat-label">残缺包</div>
+            </div>
+            <div class="analysis-stat">
+              <div class="analysis-stat-value" id="repairVersionsToDownload">0</div>
+              <div class="analysis-stat-label">待下载版本</div>
+            </div>
+            <div class="analysis-stat">
+              <div class="analysis-stat-value" id="repairUnrepairableCount">0</div>
+              <div class="analysis-stat-label">无法修复</div>
+            </div>
+          </div>
+        </div>
+        <div class="download-list" id="repairPlanList"></div>
+        <div id="repairUnrepairableList" style="margin-top: 10px;"></div>
+        <div class="action-buttons">
+          <button class="btn btn-success" onclick="confirmRepair()" id="repairConfirmBtn">
+            ✅ 确认修复
+          </button>
+          <button class="btn btn-warning" onclick="cancelRepair()">
+            ❌ 取消
+          </button>
+        </div>
+      </div>
+
+      <!-- 修复进度 -->
+      <div id="repairProgress" class="detailed-progress hidden">
+        <div class="progress-header">
+          <span class="progress-phase" id="repairPhase">下载中...</span>
+          <span class="progress-percentage" id="repairPercentage">0%</span>
+        </div>
+        <div class="progress-bar-large">
+          <div class="progress-bar-fill" id="repairProgressBar" style="width: 0%"></div>
+        </div>
+        <div class="progress-current-pkg" id="repairCurrentPkg">等待开始...</div>
+      </div>
+
+      <!-- 修复结果 -->
+      <div id="repairResult" class="analysis-result hidden">
+        <div class="analysis-header">
+          <h3 style="margin: 0; color: #2c5364;">修复结果</h3>
+          <div class="analysis-stats">
+            <div class="analysis-stat">
+              <div class="analysis-stat-value" id="repairRepairedPackages">0</div>
+              <div class="analysis-stat-label">修复包数</div>
+            </div>
+            <div class="analysis-stat">
+              <div class="analysis-stat-value" id="repairSucceeded">0</div>
+              <div class="analysis-stat-label">成功版本</div>
+            </div>
+            <div class="analysis-stat">
+              <div class="analysis-stat-value" id="repairFailed">0</div>
+              <div class="analysis-stat-label">失败版本</div>
+            </div>
+            <div class="analysis-stat">
+              <div class="analysis-stat-value" id="repairUpstreamMissing">0</div>
+              <div class="analysis-stat-label">上游已下架</div>
+            </div>
+          </div>
+        </div>
+        <div class="download-list" id="repairFailedList"></div>
+        <div class="action-buttons" id="repairRetryActions">
+          <button class="btn btn-warning" onclick="retryRepairFailed()" id="repairRetryBtn">
+            🔄 重试失败项
+          </button>
+          <button class="btn btn-primary" onclick="resetRepairWorkflow()">
+            ↩️ 返回
+          </button>
         </div>
       </div>
     </div>
@@ -953,6 +1082,8 @@ export function getWebUIHTML(config: any): string {
     let taskPollInterval = null;
     let currentAnalysis = null;
     let failedPackages = [];
+    let currentRepairScan = null;
+    let repairFailedPackages = [];
 
     // 添加日志
     function addLog(message, type = 'info') {
@@ -1030,23 +1161,53 @@ export function getWebUIHTML(config: any): string {
     }
 
     // 刷新缓存状态
+    let cacheStatusPollTimer = null;
     async function refreshCacheStatus() {
       try {
-        addLog('正在获取缓存状态...');
         const response = await fetch(API_BASE + '/cache');
         const data = await response.json();
 
         document.getElementById('totalPackages').textContent = data.totalPackages || 0;
         document.getElementById('totalVersions').textContent = data.totalVersions || 0;
-        document.getElementById('lastSync').textContent = '刚刚';
+
+        const lastSyncEl = document.getElementById('lastSync');
+        if (data.builtAt) {
+          lastSyncEl.textContent = formatBuiltAt(data.builtAt) + (data.rebuilding ? ' (后台更新中)' : '');
+        } else {
+          lastSyncEl.textContent = data.rebuilding ? '扫描中…' : '-';
+        }
 
         // 更新包列表
         updatePackageList(data.packages || []);
 
-        addLog('缓存状态已更新: ' + data.totalPackages + ' 个包, ' + data.totalVersions + ' 个版本', 'success');
+        if (data.rebuilding) {
+          // 服务端正在后台全量扫描，稍后再拉取最新结果
+          scheduleCacheStatusPoll();
+          addLog('缓存统计正在后台扫描更新…');
+        } else {
+          addLog('缓存状态已更新: ' + data.totalPackages + ' 个包, ' + data.totalVersions + ' 个版本', 'success');
+        }
       } catch (error) {
         addLog('获取缓存状态失败: ' + error.message, 'error');
       }
+    }
+
+    // 后台扫描期间定时轮询缓存状态
+    function scheduleCacheStatusPoll() {
+      if (cacheStatusPollTimer) {
+        return;
+      }
+      cacheStatusPollTimer = setTimeout(function() {
+        cacheStatusPollTimer = null;
+        refreshCacheStatus();
+      }, 8000);
+    }
+
+    // 格式化扫描快照时间
+    function formatBuiltAt(ms) {
+      const d = new Date(ms);
+      const pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+      return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
     }
 
     // 更新包列表
@@ -1600,6 +1761,348 @@ export function getWebUIHTML(config: any): string {
       document.getElementById('analysisProgress').classList.add('hidden');
       document.getElementById('analyzeBtn').disabled = false;
       document.getElementById('downloadBtn').disabled = false;
+    }
+
+    // ==================== 完整性检查与修复 ====================
+
+    const repairReasonLabels = {
+      'dist-tag-latest': 'latest',
+      'major-latest': '大版本最新',
+      'dependent-range': '依赖命中'
+    };
+
+    // 开始完整性扫描
+    async function startRepairScan() {
+      try {
+        const versionScope = document.querySelector('input[name="repairVersionScope"]:checked')?.value || 'latest';
+        document.getElementById('repairScanBtn').disabled = true;
+        document.getElementById('repairPreview').classList.add('hidden');
+        document.getElementById('repairResult').classList.add('hidden');
+        document.getElementById('repairProgress').classList.add('hidden');
+        addLog('正在启动完整性扫描（' + (versionScope === 'latest' ? '仅最新版本' : '智能模式') + '）...', 'info');
+
+        const response = await fetch(API_BASE + '/repair/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ options: { versionScope } })
+        });
+        const data = await response.json();
+
+        if (data.success && data.taskId) {
+          currentTaskId = data.taskId;
+          addLog('完整性扫描任务已启动: ' + data.taskId, 'success');
+          document.getElementById('repairScanProgress').classList.remove('hidden');
+          startRepairScanPolling(data.taskId);
+        } else {
+          addLog('启动完整性扫描失败: ' + (data.error || '未知错误'), 'error');
+          document.getElementById('repairScanBtn').disabled = false;
+        }
+      } catch (error) {
+        addLog('启动完整性扫描失败: ' + error.message, 'error');
+        document.getElementById('repairScanBtn').disabled = false;
+      }
+    }
+
+    // 轮询扫描状态
+    function startRepairScanPolling(taskId) {
+      if (taskPollInterval) {
+        clearInterval(taskPollInterval);
+      }
+
+      taskPollInterval = setInterval(async () => {
+        try {
+          const response = await fetch(API_BASE + '/status/' + taskId);
+          const task = await response.json();
+
+          updateRepairScanProgress(task);
+          updateTaskDisplay(task);
+
+          if (task.status === 'completed' || task.status === 'failed') {
+            clearInterval(taskPollInterval);
+            taskPollInterval = null;
+            document.getElementById('repairScanProgress').classList.add('hidden');
+            document.getElementById('repairScanBtn').disabled = false;
+
+            if (task.status === 'completed' && task.result) {
+              currentRepairScan = task.result;
+              addLog('扫描完成: 发现 ' + task.result.incompleteCount + ' 个残缺包, 待下载 ' +
+                task.result.totalVersionsToDownload + ' 个版本', 'success');
+              showRepairPreview(task.result);
+            } else {
+              addLog('完整性扫描失败: ' + (task.error || '未知错误'), 'error');
+            }
+          }
+        } catch (error) {
+          addLog('获取扫描状态失败: ' + error.message, 'error');
+        }
+      }, 1000);
+    }
+
+    // 更新扫描进度显示
+    function updateRepairScanProgress(task) {
+      const progress = task.detailedProgress;
+      if (!progress) {
+        return;
+      }
+
+      const phaseNames = {
+        'scanning': '扫描存储',
+        'analyzing': '分析依赖',
+        'completed': '完成'
+      };
+
+      document.getElementById('repairScanPhase').textContent =
+        phaseNames[progress.phase] || progress.phase;
+      document.getElementById('repairScanPercentage').textContent =
+        (progress.totalProgress || 0) + '%';
+      document.getElementById('repairScanProgressBar').style.width =
+        (progress.totalProgress || 0) + '%';
+      document.getElementById('repairScanProcessed').textContent = progress.processed || 0;
+      document.getElementById('repairScanTotal').textContent = progress.total || 0;
+
+      if (progress.estimatedRemaining) {
+        const seconds = Math.round(progress.estimatedRemaining / 1000);
+        document.getElementById('repairScanETA').textContent =
+          seconds > 60 ? Math.floor(seconds / 60) + 'm' + (seconds % 60) + 's' : seconds + 's';
+      }
+
+      document.getElementById('repairScanCurrentPkg').textContent =
+        progress.currentPackage || progress.phaseDescription || '处理中...';
+    }
+
+    // 显示扫描预览
+    function showRepairPreview(result) {
+      document.getElementById('repairScopeLabel').textContent =
+        '（' + (result.options && result.options.versionScope === 'smart' ? '智能模式' : '仅最新版本') + '）';
+      document.getElementById('repairIncompleteCount').textContent = result.incompleteCount;
+      document.getElementById('repairVersionsToDownload').textContent =
+        result.totalVersionsToDownload;
+      document.getElementById('repairUnrepairableCount').textContent =
+        (result.unrepairable || []).length;
+
+      const listContainer = document.getElementById('repairPlanList');
+      const plans = result.plans || [];
+
+      if (plans.length === 0) {
+        listContainer.innerHTML =
+          '<p style="text-align: center; padding: 20px; color: #28a745;">没有需要修复的包</p>';
+        document.getElementById('repairConfirmBtn').disabled = true;
+      } else {
+        const displayList = plans.slice(0, 50);
+        listContainer.innerHTML = displayList.map(plan => {
+          const versionsText = plan.selectedVersions.map(sv => sv.version).join(', ');
+          const reasonsText = [...new Set(
+            plan.selectedVersions.flatMap(sv =>
+              sv.reasons.map(r => repairReasonLabels[r] || r))
+          )].join(' / ');
+          const detail = plan.selectedVersions.map(sv =>
+            sv.version + ' [' + sv.reasons.map(r => repairReasonLabels[r] || r).join(',') + ']'
+          ).join('\\n');
+          return '<div class="download-item" title="' + detail + '">' +
+            '<div>' +
+              '<span class="pkg-name">' + plan.name + '</span>' +
+              '<span class="pkg-version">' + versionsText + '</span>' +
+            '</div>' +
+            '<span class="pkg-reason">' + plan.selectedVersions.length + ' 版本: ' +
+              reasonsText + '</span>' +
+          '</div>';
+        }).join('');
+
+        if (plans.length > 50) {
+          listContainer.innerHTML += '<p style="text-align: center; padding: 10px; color: #666;">... 还有 ' +
+            (plans.length - 50) + ' 个包</p>';
+        }
+        document.getElementById('repairConfirmBtn').disabled = false;
+      }
+
+      // 无法修复的包（如有）
+      const unrepairable = result.unrepairable || [];
+      const unrepairableContainer = document.getElementById('repairUnrepairableList');
+      if (unrepairable.length > 0) {
+        const displayUnrepairable = unrepairable.slice(0, 20);
+        unrepairableContainer.innerHTML =
+          '<p style="color: #856404; font-size: 13px; margin-bottom: 5px;">⚠️ 以下 ' +
+          unrepairable.length + ' 个包无法自动修复:</p>' +
+          displayUnrepairable.map(item =>
+            '<div style="font-size: 12px; color: #666; padding: 2px 0;">' +
+              item.name + ' — ' + item.reason +
+            '</div>'
+          ).join('') +
+          (unrepairable.length > 20
+            ? '<div style="font-size: 12px; color: #666;">... 还有 ' +
+              (unrepairable.length - 20) + ' 个</div>'
+            : '');
+      } else {
+        unrepairableContainer.innerHTML = '';
+      }
+
+      document.getElementById('repairPreview').classList.remove('hidden');
+      document.getElementById('repairResult').classList.add('hidden');
+    }
+
+    // 取消修复
+    function cancelRepair() {
+      currentRepairScan = null;
+      document.getElementById('repairPreview').classList.add('hidden');
+      document.getElementById('repairScanProgress').classList.add('hidden');
+      document.getElementById('repairScanBtn').disabled = false;
+      addLog('已取消修复', 'info');
+    }
+
+    // 确认修复
+    async function confirmRepair() {
+      if (!currentRepairScan || !currentRepairScan.scanId) {
+        addLog('没有有效的扫描结果', 'error');
+        return;
+      }
+
+      try {
+        document.getElementById('repairConfirmBtn').disabled = true;
+        addLog('正在启动修复任务...', 'info');
+
+        const response = await fetch(API_BASE + '/repair', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scanId: currentRepairScan.scanId })
+        });
+        const data = await response.json();
+
+        if (data.success && data.taskId) {
+          currentTaskId = data.taskId;
+          addLog('修复任务已启动: ' + data.taskId + ' (共 ' + data.total + ' 个版本)', 'success');
+          document.getElementById('repairPreview').classList.add('hidden');
+          document.getElementById('repairProgress').classList.remove('hidden');
+          startRepairPolling(data.taskId);
+        } else {
+          addLog('启动修复任务失败: ' + (data.error || '未知错误'), 'error');
+          document.getElementById('repairConfirmBtn').disabled = false;
+        }
+      } catch (error) {
+        addLog('启动修复任务失败: ' + error.message, 'error');
+        document.getElementById('repairConfirmBtn').disabled = false;
+      }
+    }
+
+    // 轮询修复状态
+    function startRepairPolling(taskId) {
+      if (taskPollInterval) {
+        clearInterval(taskPollInterval);
+      }
+
+      taskPollInterval = setInterval(async () => {
+        try {
+          const response = await fetch(API_BASE + '/status/' + taskId);
+          const task = await response.json();
+
+          document.getElementById('repairPercentage').textContent = (task.progress || 0) + '%';
+          document.getElementById('repairProgressBar').style.width = (task.progress || 0) + '%';
+          document.getElementById('repairCurrentPkg').textContent = task.message || '下载中...';
+          updateTaskDisplay(task);
+
+          if (task.status === 'completed' || task.status === 'failed') {
+            clearInterval(taskPollInterval);
+            taskPollInterval = null;
+            document.getElementById('repairProgress').classList.add('hidden');
+            document.getElementById('repairScanBtn').disabled = false;
+
+            if (task.status === 'completed' && task.result) {
+              addLog('修复完成! 成功: ' + task.result.succeeded + ', 失败: ' + task.result.failed,
+                task.result.failed > 0 ? 'warning' : 'success');
+              showRepairResult(task.result);
+            } else {
+              addLog('修复任务失败: ' + (task.error || '未知错误'), 'error');
+            }
+            refreshCacheStatus();
+          }
+        } catch (error) {
+          addLog('获取修复状态失败: ' + error.message, 'error');
+        }
+      }, 2000);
+    }
+
+    // 显示修复结果
+    function showRepairResult(result) {
+      document.getElementById('repairRepairedPackages').textContent =
+        result.repairedPackages || 0;
+      document.getElementById('repairSucceeded').textContent = result.succeeded;
+      document.getElementById('repairFailed').textContent = result.failed;
+      document.getElementById('repairUpstreamMissing').textContent =
+        (result.upstreamMissing || []).length;
+
+      // 上游已下架的版本重试无效，从可重试列表中剔除
+      const upstreamMissingKeys = new Set(
+        (result.upstreamMissing || []).map(pkg => pkg.name + '@' + pkg.version)
+      );
+      repairFailedPackages = (result.failedPackages || []).filter(
+        pkg => !upstreamMissingKeys.has(pkg.name + '@' + pkg.version)
+      );
+
+      const failedListContainer = document.getElementById('repairFailedList');
+      const allFailed = result.failedPackages || [];
+
+      if (allFailed.length === 0) {
+        failedListContainer.innerHTML =
+          '<p style="text-align: center; padding: 20px; color: #28a745;">全部修复成功!</p>';
+      } else {
+        failedListContainer.innerHTML = allFailed.map(pkg => {
+          const isMissing = upstreamMissingKeys.has(pkg.name + '@' + pkg.version);
+          return '<div class="download-item failed">' +
+            '<div>' +
+              '<span class="pkg-name">' + pkg.name + '</span>' +
+              '<span class="pkg-version">@' + pkg.version + '</span>' +
+            '</div>' +
+            '<span class="pkg-status failed">' +
+              (isMissing ? '上游已下架' : '失败') +
+            '</span>' +
+          '</div>';
+        }).join('');
+      }
+
+      document.getElementById('repairRetryBtn').disabled = repairFailedPackages.length === 0;
+      document.getElementById('repairResult').classList.remove('hidden');
+    }
+
+    // 重试修复失败项（上游已下架的已剔除）
+    async function retryRepairFailed() {
+      if (repairFailedPackages.length === 0) {
+        addLog('没有可重试的包（上游已下架的版本无法重试）', 'info');
+        return;
+      }
+
+      try {
+        addLog('正在重试 ' + repairFailedPackages.length + ' 个失败的版本...', 'info');
+
+        const response = await fetch(API_BASE + '/retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ packages: repairFailedPackages })
+        });
+        const data = await response.json();
+
+        if (data.success && data.taskId) {
+          currentTaskId = data.taskId;
+          addLog('重试任务已启动: ' + data.taskId, 'success');
+          document.getElementById('repairResult').classList.add('hidden');
+          document.getElementById('repairProgress').classList.remove('hidden');
+          startRepairPolling(data.taskId);
+        } else {
+          addLog('启动重试任务失败: ' + (data.error || '未知错误'), 'error');
+        }
+      } catch (error) {
+        addLog('启动重试任务失败: ' + error.message, 'error');
+      }
+    }
+
+    // 重置修复工作流
+    function resetRepairWorkflow() {
+      currentRepairScan = null;
+      repairFailedPackages = [];
+      document.getElementById('repairPreview').classList.add('hidden');
+      document.getElementById('repairResult').classList.add('hidden');
+      document.getElementById('repairProgress').classList.add('hidden');
+      document.getElementById('repairScanProgress').classList.add('hidden');
+      document.getElementById('repairScanBtn').disabled = false;
+      document.getElementById('repairConfirmBtn').disabled = false;
     }
 
     // 开始同步（保留旧的一键同步功能）

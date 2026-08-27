@@ -43,6 +43,7 @@
 - **特殊平台包兼容** - 支持 Codex 的 npm alias 平台版本和 Claude Code 独立平台包，并识别 `0.146.1-win32-x64` 等多段版本后缀
 - **历史缓存重建** - healer 可完全离线重建已经导入或下载的缓存元数据与本地包列表，并支持重复执行
 - **完整性校验** - 下载后自动校验 tarball SHA-1，防止损坏包污染本地缓存；本地版本解析时同步校验文件完整性，自动剔除损坏文件
+- **完整性检查与修复** - 一键扫描"有元数据但零 tarball"的残缺包（analyze 预写元数据未确认下载、代理元数据缓存等场景产生），智能选取 latest、各大版本最新及被本地依赖命中的版本补下载，404 版本自动分类且支持失败重试
 
 ## 插件组成
 
@@ -99,6 +100,27 @@ $V_PATH/
 ```
 
 > 提示：通过挂载不同的配置文件来区分外网/内网环境，参考下方的配置示例。
+
+#### 构建并发布 Docker 镜像
+
+Docker 标签自动读取根目录 `package.json` 的 `version`。例如当前版本 `1.2.9` 会同时构建并推送：
+
+- `jayxuz/verdaccio-offline-sync:1.2.9`
+- `jayxuz/verdaccio-offline-sync:latest`
+
+```bash
+# 首次发布前登录 Docker Hub
+docker login
+
+# 仅构建两个标签
+npm run docker:build
+
+# 推送已经构建的两个标签
+npm run docker:push
+
+# 构建并推送
+npm run docker:publish
+```
 
 ---
 

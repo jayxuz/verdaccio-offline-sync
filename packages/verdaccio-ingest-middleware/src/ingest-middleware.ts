@@ -1,6 +1,8 @@
 import { Router, Express, Request, Response, json } from 'express';
 import { pluginUtils } from '@verdaccio/core';
 import { Config, Logger } from '@verdaccio/types';
+import { readFile, rename, writeFile } from 'fs/promises';
+import path from 'path';
 import pLimit from 'p-limit';
 import semver from 'semver';
 import { StorageScanner } from './storage-scanner';
@@ -8,6 +10,7 @@ import { PackageDownloader } from './package-downloader';
 import { DependencyResolver } from './dependency-resolver';
 import { DifferentialScanner } from './differential-scanner';
 import { DifferentialPacker } from './differential-packer';
+import { collectRangesFromPackument, selectRepairVersions } from './repair-planner';
 import { getWebUIHTML } from './web-ui';
 import {
   IngestConfig,
@@ -29,7 +32,13 @@ import {
   AnalysisProgress,
   ExportPreviewRequest,
   ExportCreateRequest,
-  ExportProgress
+  ExportProgress,
+  RepairScanRequest,
+  RepairScanResult,
+  RepairPlanEntry,
+  RepairRequest,
+  RepairResult,
+  UnrepairablePackage
 } from './types';
 
 interface PackageOperationFailure {
@@ -76,9 +85,19 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
   private tasks: Map<string, TaskStatus>;
   // 分析结果缓存（用于分析-确认-下载工作流）
   private analysisCache: Map<string, AnalysisResult>;
+  // 完整性扫描结果缓存（用于扫描-确认-修复工作流）
+  private repairScanCache: Map<string, RepairScanResult>;
   // 差分导出相关
   private diffScanner!: DifferentialScanner;
   private diffPacker!: DifferentialPacker;
+  // 缓存状态（/ingest/cache）扫描结果缓存：内存 + 磁盘快照，
+  // 避免每次打开 UI 都对存储目录做全量扫描。
+  // 注意：单测通过 Object.create(prototype) 复用实例，这些字段不做构造函数初始化，
+  // 读取时一律按"可能为 undefined"做惰性兜底。
+  private scanCache: { status: CacheStatus; builtAt: number } | null = null;
+  private scanCacheDirty = true;
+  private scanCacheSnapshotLoaded = false;
+  private scanCacheRebuild: Promise<boolean> | null = null;
 
   constructor(config: IngestConfig, options: pluginUtils.PluginOptions) {
     super(config, options);
@@ -108,6 +127,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     this.resolver = new DependencyResolver(this.config as IngestConfig, this.logger);
     this.tasks = new Map();
     this.analysisCache = new Map();
+    this.repairScanCache = new Map();
   }
 
   /**
@@ -162,6 +182,15 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     // 重建本地索引（内网元数据修复）
     router.post('/ingest/rebuild-index', this.handleRebuildIndex.bind(this));
 
+    // 完整性扫描（找出"有元数据但零 tarball"的残缺包）
+    router.post('/ingest/repair/scan', this.handleRepairScan.bind(this));
+
+    // 获取完整性扫描结果
+    router.get('/ingest/repair/scan/:scanId', this.handleGetRepairScan.bind(this));
+
+    // 执行修复（下载智能选取的版本）
+    router.post('/ingest/repair', this.handleRepair.bind(this));
+
     // Web UI 管理界面
     router.get('/ingest/ui', this.handleWebUI.bind(this));
 
@@ -190,6 +219,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     const { packages, all } = req.body as IngestRequest;
 
     try {
+      this.markScanCacheDirty();
       let cachedPackages = await this.scanner.scanAllPackages();
 
       // 如果指定了包名，只刷新指定的包
@@ -377,12 +407,22 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         }
       );
 
+      // downloadAll 内部 allSettled 会吞掉单个失败，这里通过差集还原失败列表
+      const requestedSpecs = packagesToDownload.map((p) => `${p.name}@${p.version}`);
+      const succeededSpecs = new Set(
+        downloadResults.map((r) => `${r.package.name}@${r.package.version}`)
+      );
+      const downloadErrors = requestedSpecs
+        .filter((spec) => !succeededSpecs.has(spec))
+        .map((spec) => `download failed: ${spec}`);
+
       const result: SyncResult = {
-        success: true,
+        success: downloadErrors.length === 0,
         scanned: cachedPackages.length,
         refreshed: refreshedCount,
         downloaded: downloadResults.length,
-        platforms: platforms.map((p) => `${p.os}-${p.arch}`)
+        platforms: platforms.map((p) => `${p.os}-${p.arch}`),
+        ...(downloadErrors.length > 0 ? { errors: downloadErrors } : {})
       };
 
       this.updateTask(taskId, {
@@ -821,6 +861,33 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
   ): Promise<DownloadBatchResult> {
     this.updateTask(taskId, { status: 'running', progress: 0 });
 
+    try {
+      const batchResult = await this.runDownloadBatches(taskId, packages);
+
+      this.updateTask(taskId, {
+        status: 'completed',
+        progress: 100,
+        result: batchResult
+      });
+
+      return batchResult;
+    } catch (error: any) {
+      this.updateTask(taskId, {
+        status: 'failed',
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 分批下载核心逻辑（executeDownload 与 executeRepair 共用）
+   * 负责：分批并发下载、失败收集与残留清理、完成后按包刷新元数据（回填 _distfiles）
+   */
+  private async runDownloadBatches(
+    taskId: string,
+    packages: PackageToDownload[]
+  ): Promise<DownloadBatchResult> {
     const results: PackageDownloadStatus[] = [];
     const failedPackages: PackageToDownload[] = [];
     const downloadedPackageNames = new Set<string>();
@@ -874,7 +941,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         await this.savePackumentsForPackages(Array.from(downloadedPackageNames));
       }
 
-      const batchResult: DownloadBatchResult = {
+      return {
         success: failedPackages.length === 0,
         total: packages.length,
         succeeded: packages.length - failedPackages.length,
@@ -882,20 +949,6 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         results,
         failedPackages
       };
-
-      this.updateTask(taskId, {
-        status: 'completed',
-        progress: 100,
-        result: batchResult
-      });
-
-      return batchResult;
-    } catch (error: any) {
-      this.updateTask(taskId, {
-        status: 'failed',
-        error: error.message
-      });
-      throw error;
     } finally {
       this.downloader.clearRequestCache();
     }
@@ -1322,25 +1375,171 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
   /**
    * 处理缓存状态查询
    */
+  /**
+   * 处理缓存状态请求（stale-while-revalidate）
+   *
+   * 全量扫描在 9p/网络挂载上非常慢（实测约 1 分钟），因此：
+   * - 优先返回内存缓存；没有内存缓存时尝试读取磁盘快照（跨容器重建保留）；
+   * - 缓存过期/被标脏/?force=1 时后台重建并立即返回旧数据；
+   * - 仅在完全没有任何数据（首次运行）时同步等待首次扫描。
+   */
   private async handleCacheStatus(req: Request, res: Response): Promise<void> {
     try {
-      const packages = await this.scanner.scanAllPackages();
+      if (!this.scanCache && this.scanCacheSnapshotLoaded !== true) {
+        this.scanCacheSnapshotLoaded = true;
+        await this.loadScanCacheSnapshot();
+      }
 
-      const status: CacheStatus = {
-        totalPackages: packages.length,
-        totalVersions: packages.reduce((sum, p) => sum + p.versions.length, 0),
-        packages: packages.map((p) => ({
-          name: p.name,
-          versions: p.versions,
-          latestCached: p.latestVersion || p.versions[p.versions.length - 1]
-        }))
-      };
+      const cached = this.scanCache || null;
+      const dirty = this.scanCacheDirty !== false;
+      const fresh =
+        !!cached && !dirty && Date.now() - cached.builtAt < this.getScanCacheTtlMs();
+      const force = req.query?.force === '1' || req.query?.force === 'true';
 
-      res.json(status);
+      if (force || !fresh) {
+        const rebuild = this.rebuildScanCache();
+        if (!cached) {
+          // 冷启动（无内存缓存也无磁盘快照）：没有可展示的数据，同步等待
+          await rebuild;
+        }
+      }
+
+      const current = this.scanCache || null;
+      const rebuilding = this.scanCacheRebuild != null;
+      if (!current) {
+        res.json({
+          success: true,
+          totalPackages: 0,
+          totalVersions: 0,
+          packages: [],
+          builtAt: null,
+          stale: true,
+          rebuilding
+        });
+        return;
+      }
+
+      const servedFresh =
+        !rebuilding &&
+        this.scanCacheDirty === false &&
+        Date.now() - current.builtAt < this.getScanCacheTtlMs();
+
+      res.json({
+        success: true,
+        ...current.status,
+        builtAt: current.builtAt,
+        stale: !servedFresh,
+        rebuilding
+      });
     } catch (error: any) {
       this.logger.error({ error: error.message }, 'Cache status failed: @{error}');
       res.status(500).json({ success: false, error: error.message });
     }
+  }
+
+  private getScanCacheTtlMs(): number {
+    const configured = Number((this.config as IngestConfig).scanCacheTtlSeconds);
+    const seconds = Number.isFinite(configured) && configured > 0 ? configured : 600;
+    return seconds * 1000;
+  }
+
+  private getScanCacheSnapshotPath(): string {
+    return path.join(this.storagePath, '.ingest-scan-cache.json');
+  }
+
+  /**
+   * 任何会改动存储内容的操作都应调用，使扫描缓存失效，
+   * 下一次 /ingest/cache 请求将触发后台重建。
+   */
+  private markScanCacheDirty(): void {
+    this.scanCacheDirty = true;
+  }
+
+  private async buildCacheStatus(): Promise<CacheStatus> {
+    const packages = await this.scanner.scanAllPackages();
+
+    return {
+      totalPackages: packages.length,
+      totalVersions: packages.reduce((sum, p) => sum + p.versions.length, 0),
+      packages: packages.map((p) => ({
+        name: p.name,
+        versions: p.versions,
+        latestCached: p.latestVersion || p.versions[p.versions.length - 1]
+      }))
+    };
+  }
+
+  /**
+   * 单-flight 重建扫描缓存并持久化快照；并发调用共享同一次扫描。
+   * 返回最终是否有可用缓存（重建失败时保留旧缓存）。
+   */
+  private rebuildScanCache(): Promise<boolean> {
+    if (this.scanCacheRebuild) {
+      return this.scanCacheRebuild;
+    }
+
+    // 在重建开始时清除脏标记：若重建期间再次标脏，下次请求会再触发一轮
+    this.scanCacheDirty = false;
+
+    const rebuild = (async () => {
+      try {
+        const status = await this.buildCacheStatus();
+        this.scanCache = { status, builtAt: Date.now() };
+        await this.persistScanCacheSnapshot();
+        return true;
+      } catch (error: any) {
+        this.logger.warn(
+          { error: error?.message },
+          'Failed to rebuild scan cache: @{error}'
+        );
+        return this.scanCache != null;
+      } finally {
+        this.scanCacheRebuild = null;
+      }
+    })();
+
+    this.scanCacheRebuild = rebuild;
+    return rebuild;
+  }
+
+  private async persistScanCacheSnapshot(): Promise<void> {
+    if (!this.scanCache) {
+      return;
+    }
+
+    const snapshotPath = this.getScanCacheSnapshotPath();
+    const tmpPath = `${snapshotPath}.tmp-${process.pid}`;
+    try {
+      await writeFile(tmpPath, JSON.stringify(this.scanCache));
+      await rename(tmpPath, snapshotPath);
+    } catch (error: any) {
+      this.logger.warn(
+        { error: error?.message },
+        'Failed to persist scan cache snapshot: @{error}'
+      );
+    }
+  }
+
+  private async loadScanCacheSnapshot(): Promise<boolean> {
+    try {
+      const raw = await readFile(this.getScanCacheSnapshotPath(), 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        typeof parsed.builtAt === 'number' &&
+        parsed.status &&
+        Array.isArray(parsed.status.packages)
+      ) {
+        this.scanCache = parsed;
+        // 快照本身就是一次已完成扫描的结果，不属于"待重建"状态；
+        // 是否重建仅由 TTL 决定
+        this.scanCacheDirty = false;
+        return true;
+      }
+    } catch {
+      // 快照不存在或损坏：按无快照处理
+    }
+    return false;
   }
 
   /**
@@ -1349,6 +1548,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
    */
   private async handleRebuildIndex(req: Request, res: Response): Promise<void> {
     try {
+      this.markScanCacheDirty();
       this.logger.info('Starting index rebuild...');
 
       // 1. 扫描所有包
@@ -1473,6 +1673,359 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
   }
 
   /**
+   * 处理完整性扫描请求
+   */
+  private async handleRepairScan(req: Request, res: Response): Promise<void> {
+    const { options } = req.body as RepairScanRequest;
+
+    const taskId = this.createTask();
+
+    this.executeRepairScan(taskId, options || {}).catch((error) => {
+      this.updateTask(taskId, {
+        status: 'failed',
+        error: error.message
+      });
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      message: 'Repair scan task started'
+    });
+  }
+
+  /**
+   * 执行完整性扫描：找出"有元数据但零 tarball"的残缺包，并智能选取待修复版本
+   * 全程只读本地存储，不请求上游
+   */
+  private async executeRepairScan(
+    taskId: string,
+    options: {
+      includeDependents?: boolean;
+      includePrerelease?: boolean;
+      versionScope?: 'smart' | 'latest';
+    }
+  ): Promise<RepairScanResult> {
+    const startTime = Date.now();
+    const versionScope = options.versionScope || 'latest';
+    // latest 模式不需要依赖命中分析，跳过正常包的 packument 遍历（提速关键）
+    const includeDependents =
+      versionScope !== 'latest' && options.includeDependents !== false;
+
+    this.updateTask(taskId, {
+      status: 'running',
+      progress: 0,
+      detailedProgress: {
+        phase: 'scanning',
+        phaseProgress: 0,
+        totalProgress: 0,
+        processed: 0,
+        total: 0,
+        startTime,
+        phaseDescription: '扫描存储完整性...'
+      }
+    });
+
+    try {
+      // 1. 目录级完整性探测（0-40%）
+      const integrity = await this.scanner.scanAllPackageIntegrity(
+        (processed, total, current) => {
+          const phaseProgress = total <= 0 ? 100 : Math.round((processed / total) * 100);
+          this.updateTask(taskId, {
+            progress: Math.round(phaseProgress * 0.4),
+            detailedProgress: {
+              phase: 'scanning',
+              phaseProgress,
+              totalProgress: Math.round(phaseProgress * 0.4),
+              currentPackage: current,
+              processed,
+              total,
+              startTime,
+              phaseDescription: `扫描存储完整性 (${processed}/${total}): ${current}`
+            }
+          });
+        }
+      );
+
+      // 残缺 = 有元数据但零有效 tarball；无元数据的空目录单独报告
+      const incomplete = integrity.filter(
+        (info) => info.tarballVersions.length === 0 && info.hasMetadata
+      );
+      const unrepairable: UnrepairablePackage[] = integrity
+        .filter((info) => info.tarballVersions.length === 0 && !info.hasMetadata)
+        .map((info) => ({ name: info.name, reason: 'package.json 缺失或损坏' }));
+      const incompleteNames = new Set(incomplete.map((info) => info.name));
+      const incompleteCount = incomplete.length;
+      const healthyCount = integrity.filter((info) => info.tarballVersions.length > 0).length;
+
+      // 2. 遍历有元数据的包（40-90%）：
+      //    残缺包保留 versions/dist-tags 供选版；
+      //    smart 模式下正常包收集对残缺包的依赖范围（latest 模式跳过以提速）
+      const dependentRanges = new Map<string, Set<string>>();
+      const incompletePackuments = new Map<string, any>();
+      const metadataHolders = includeDependents
+        ? integrity.filter((info) => info.hasMetadata)
+        : incomplete;
+      const limit = pLimit(this.getConcurrency());
+      let processed = 0;
+      const total = metadataHolders.length;
+
+      await Promise.all(
+        metadataHolders.map((info) =>
+          limit(async () => {
+            try {
+              const packument = await this.scanner.readPackument(info.name);
+              if (packument) {
+                if (incompleteNames.has(info.name)) {
+                  incompletePackuments.set(info.name, {
+                    versions: (packument as any).versions || {},
+                    'dist-tags': (packument as any)['dist-tags'] || {}
+                  });
+                } else if (includeDependents) {
+                  collectRangesFromPackument(packument, incompleteNames, dependentRanges);
+                }
+              }
+            } catch (error: any) {
+              this.logger.warn(
+                { name: info.name, error: getErrorMessage(error) },
+                'Failed to read packument for @{name} during repair scan: @{error}'
+              );
+            } finally {
+              processed++;
+              const phaseProgress = total <= 0 ? 100 : Math.round((processed / total) * 100);
+              this.updateTask(taskId, {
+                progress: 40 + Math.round(phaseProgress * 0.5),
+                detailedProgress: {
+                  phase: 'analyzing',
+                  phaseProgress,
+                  totalProgress: 40 + Math.round(phaseProgress * 0.5),
+                  currentPackage: info.name,
+                  processed,
+                  total,
+                  startTime,
+                  phaseDescription: `分析依赖命中 (${processed}/${total}): ${info.name}`
+                }
+              });
+            }
+          })
+        )
+      );
+
+      // 3. 智能选取待下载版本（90-100%）
+      const plans: RepairPlanEntry[] = [];
+      for (const info of incomplete) {
+        const packument = incompletePackuments.get(info.name);
+        if (!packument) {
+          unrepairable.push({ name: info.name, reason: '无法读取本地元数据' });
+          continue;
+        }
+
+        const selectedVersions = selectRepairVersions(
+          packument,
+          dependentRanges.get(info.name) || [],
+          {
+            includePrerelease: options.includePrerelease === true,
+            versionScope
+          }
+        );
+
+        if (selectedVersions.length === 0) {
+          unrepairable.push({
+            name: info.name,
+            reason:
+              versionScope === 'latest'
+                ? '元数据中没有 dist-tags.latest 指向的有效版本'
+                : '元数据中没有可选版本（可能全部为 prerelease）'
+          });
+          continue;
+        }
+
+        plans.push({
+          name: info.name,
+          metadataVersionCount: Object.keys(packument.versions).length,
+          selectedVersions
+        });
+      }
+
+      const totalVersionsToDownload = plans.reduce(
+        (sum, plan) => sum + plan.selectedVersions.length,
+        0
+      );
+
+      const result: RepairScanResult = {
+        scanId: `repair-scan-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        scanned: integrity.length,
+        healthy: healthyCount,
+        incompleteCount,
+        totalVersionsToDownload,
+        plans,
+        unrepairable,
+        options: {
+          includeDependents,
+          includePrerelease: options.includePrerelease === true,
+          versionScope
+        },
+        timestamp: Date.now()
+      };
+
+      // 缓存扫描结果（1小时过期，仿 analysisCache）
+      this.repairScanCache.set(result.scanId, result);
+      setTimeout(() => this.repairScanCache.delete(result.scanId), 3600000).unref();
+
+      this.logger.info(
+        { scanId: result.scanId, incomplete: incompleteCount, toDownload: totalVersionsToDownload },
+        'Repair scan complete: @{incomplete} incomplete packages, @{toDownload} versions to download'
+      );
+
+      this.updateTask(taskId, {
+        status: 'completed',
+        progress: 100,
+        message: `完整性扫描完成: ${incompleteCount} 个残缺包，待下载 ${totalVersionsToDownload} 个版本`,
+        result,
+        detailedProgress: {
+          phase: 'completed',
+          phaseProgress: 100,
+          totalProgress: 100,
+          processed: total,
+          total,
+          startTime,
+          phaseDescription: `扫描完成: ${incompleteCount} 个残缺包，待下载 ${totalVersionsToDownload} 个版本`
+        }
+      });
+
+      return result;
+    } catch (error: any) {
+      this.updateTask(taskId, {
+        status: 'failed',
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 获取完整性扫描结果
+   */
+  private handleGetRepairScan(req: Request, res: Response): void {
+    const { scanId } = req.params;
+    const scan = this.repairScanCache.get(scanId);
+
+    if (!scan) {
+      res.status(404).json({ success: false, error: 'Repair scan not found or expired' });
+      return;
+    }
+
+    res.json({ success: true, ...scan });
+  }
+
+  /**
+   * 处理修复请求（基于扫描结果或显式包列表）
+   */
+  private async handleRepair(req: Request, res: Response): Promise<void> {
+    const { scanId, packages } = req.body as RepairRequest;
+
+    let packagesToRepair: PackageToDownload[];
+
+    if (scanId) {
+      const scan = this.repairScanCache.get(scanId);
+      if (!scan) {
+        res.status(404).json({ success: false, error: 'Repair scan not found or expired' });
+        return;
+      }
+      packagesToRepair = scan.plans.flatMap((plan) =>
+        plan.selectedVersions.map((selected) => ({
+          name: plan.name,
+          version: selected.version,
+          reason: 'integrity-repair' as const
+        }))
+      );
+    } else if (packages && packages.length > 0) {
+      packagesToRepair = packages;
+    } else {
+      res.status(400).json({ success: false, error: 'No packages to repair' });
+      return;
+    }
+
+    if (packagesToRepair.length === 0) {
+      res.status(400).json({ success: false, error: 'No versions selected to repair' });
+      return;
+    }
+
+    const taskId = this.createTask();
+
+    this.executeRepair(taskId, packagesToRepair).catch((error) => {
+      this.updateTask(taskId, {
+        status: 'failed',
+        error: error.message
+      });
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      total: packagesToRepair.length,
+      message: 'Repair task started'
+    });
+  }
+
+  /**
+   * 执行修复任务：复用分批下载，404 类失败单独分类（上游已下架，重试无效）
+   */
+  private async executeRepair(
+    taskId: string,
+    packages: PackageToDownload[]
+  ): Promise<RepairResult> {
+    this.updateTask(taskId, { status: 'running', progress: 0 });
+
+    try {
+      const batch = await this.runDownloadBatches(taskId, packages);
+
+      for (const status of batch.results) {
+        if (status.status === 'failed' && this.isUpstreamMissingError(status.error)) {
+          status.upstreamMissing = true;
+        }
+      }
+
+      const missingKeys = new Set(
+        batch.results
+          .filter((r) => r.upstreamMissing)
+          .map((r) => `${r.name}@${r.version}`)
+      );
+
+      const result: RepairResult = {
+        ...batch,
+        repairedPackages: new Set(
+          batch.results.filter((r) => r.status === 'success').map((r) => r.name)
+        ).size,
+        upstreamMissing: batch.failedPackages.filter((pkg) =>
+          missingKeys.has(`${pkg.name}@${pkg.version}`)
+        )
+      };
+
+      this.updateTask(taskId, {
+        status: 'completed',
+        progress: 100,
+        result
+      });
+
+      return result;
+    } catch (error: any) {
+      this.updateTask(taskId, {
+        status: 'failed',
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 判断下载失败是否为"上游不存在/已下架"（此类重试无效）
+   */
+  private isUpstreamMissingError(message?: string): boolean {
+    return !!message && /404|no matching version|not found/i.test(message);
+  }
+
+  /**
    * 处理 Web UI 请求
    */
   private handleWebUI(req: Request, res: Response): void {
@@ -1500,6 +2053,11 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     const task = this.tasks.get(taskId);
     if (task) {
       Object.assign(task, updates);
+      // 任务完成意味着存储内容可能已变化（下载/分析/修复/导出等），
+      // 统一在这里使扫描缓存失效，由下一次 /ingest/cache 请求后台重建
+      if (updates.status === 'completed') {
+        this.markScanCacheDirty();
+      }
     }
   }
 
