@@ -1,3 +1,4 @@
+import { stableRead } from './mirror-core';
 import { createReadStream, createWriteStream } from 'fs';
 import { mkdir, rm, copyFile, readFile, writeFile, stat } from 'fs/promises';
 import path from 'path';
@@ -57,6 +58,7 @@ export class DifferentialPacker {
       onProgress
     } = options;
 
+    if (!/^[a-zA-Z0-9_-]+$/.test(filenamePrefix) || !/^[a-zA-Z0-9_-]+$/.test(exportId)) throw new Error('Unsafe export name');
     const timestamp = new Date();
     const timestampStr = timestamp.toISOString().replace(/[:.]/g, '-');
     const filename = `${filenamePrefix}-${timestampStr}.tar.gz`;
@@ -77,7 +79,13 @@ export class DifferentialPacker {
       await Promise.all(
         files.map((file, index) =>
           checksumLimit(async () => {
-            const checksum = await this.calculateFileChecksum(file.absolutePath);
+            const safe = file.relativePath.replace(/%2f/gi, '/');
+            if (safe.startsWith('/') || safe.includes('\\') || safe.split('/').some(p => !p || p === '.' || p === '..')) throw new Error('Unsafe export path');
+            const staged = path.join(tempDir, safe);
+            const current = await stat(file.absolutePath);
+            if (current.size !== file.size || current.mtimeMs !== file.mtime.getTime()) throw new Error('Source changed after scan');
+            const observed = await stableRead(file.absolutePath, staged);
+            const checksum = observed.sha256;
             filesWithChecksum[index] = {
               path: file.relativePath,
               size: file.size,
@@ -105,41 +113,7 @@ export class DifferentialPacker {
         )
       );
 
-      // 阶段 2: 复制文件到临时目录
-      this.logger.info('Copying files to temp directory...');
-      processed = 0;
-      const copyLimit = pLimit(this.fileConcurrency);
-      const dirCreatePromises = new Map<string, Promise<void>>();
-
-      await Promise.all(
-        files.map((file) =>
-          copyLimit(async () => {
-            const destPath = path.join(tempDir, file.relativePath);
-            const dirPath = path.dirname(destPath);
-            let dirPromise = dirCreatePromises.get(dirPath);
-            if (!dirPromise) {
-              dirPromise = mkdir(dirPath, { recursive: true }).then(() => undefined);
-              dirCreatePromises.set(dirPath, dirPromise);
-            }
-            await dirPromise;
-            await copyFile(file.absolutePath, destPath);
-
-            processed++;
-            if (onProgress) {
-              onProgress({
-                phase: 'packing',
-                phaseProgress: Math.round((processed / total) * 100),
-                totalProgress: 30 + Math.round((processed / total) * 50),
-                currentFile: file.relativePath,
-                processed,
-                total,
-                startTime: timestamp.getTime(),
-                phaseDescription: `复制文件: ${file.relativePath}`
-              });
-            }
-          })
-        )
-      );
+      // Files were staged and hashed in one stream above; pack only the stable copies.
 
       // 计算统计信息
       const packages = new Set(files.map(f => f.packageName));

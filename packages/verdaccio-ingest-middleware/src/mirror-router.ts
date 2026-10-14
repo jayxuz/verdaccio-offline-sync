@@ -22,7 +22,7 @@ export function mirrorRouter(storage: string, prefix: string, options: MirrorOpt
   };
   const router = Router(), repo = new MirrorRepository(storage, runtimeOptions);
   const action = (fn: (req:any,res:any)=>Promise<any>) => async(req:any,res:any):Promise<void> => {
-    try { await fn(req,res); } catch(e:any) { if(!res.headersSent)res.status(409).json({success:false,error:e.message}); }
+    try { await fn(req,res); } catch(e:any) { if(process.env.VERDACCIO_MIRROR_DEBUG)console.error(e.stack); if(!res.headersSent)res.status(409).json({success:false,error:e.message}); }
   };
   router.get(prefix+'/ui', (_req,res)=>res.type('html').send(mirrorHTML(prefix)));
   // Use a local parser before existing plugin parsers, allowing full inventories without changing other APIs.
@@ -35,8 +35,11 @@ export function mirrorRouter(storage: string, prefix: string, options: MirrorOpt
   router.post(prefix+'/export', action(async(req,res)=>{ const result=await repo.export(req.body.source_snapshot_id,req.body.target); delete result.archive; res.json({...result,download_url:`${prefix}/archives/${result.transfer_id}`}); }));
   router.get(prefix+'/archives/:id', action(async(req,res)=>{await repo.init();await fs.access(repo.archive(req.params.id));res.download(repo.archive(req.params.id),req.params.id+'.tar.gz');}));
   router.post(prefix+'/import', action(async(req,res)=>{
+    // Verdaccio's request logger adds a data listener. Pause synchronously before any await,
+    // otherwise the incoming body drains while the upload directory is being prepared.
+    req.pause();
     await repo.init();const dir=path.join(repo.state,'uploads');await fs.mkdir(dir,{recursive:true});const upload=path.join(dir,randomUUID());let size=0;
-    try { const cap=new Transform({transform(chunk,_e,cb){size+=chunk.length;cb(size>(options.maxBytes||20*1024**3)?new Error('Upload size limit'):null,chunk);}});await pipeline(req,cap,createWriteStream(upload,{flags:'wx',mode:0o600}));res.json(await repo.import(upload)); }
+    try { const cap=new Transform({transform(chunk,_e,cb){size+=chunk.length;cb(size>(options.maxBytes||20*1024**3)?new Error('Upload size limit'):null,chunk);}});await pipeline(req,cap,createWriteStream(upload,{flags:'wx',mode:0o600}));res.setHeader('X-Mirror-Upload-Bytes',size);if(!size)throw new Error('Empty archive upload; check host request-body middleware');res.json(await repo.import(upload)); }
     finally {await fs.rm(upload,{force:true});}
   }));
   router.post(prefix+'/receipt', action(async(req,res)=>res.json(await repo.acceptReceipt(req.body))));

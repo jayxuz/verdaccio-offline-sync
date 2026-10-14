@@ -1,3 +1,4 @@
+import { extractLegacyArchive, mergeLegacyMetadata, safeLegacyDestination, stableRead } from './mirror-core';
 import { createReadStream } from 'fs';
 import { mkdir, rm, copyFile, readFile, writeFile, access } from 'fs/promises';
 import path from 'path';
@@ -71,10 +72,8 @@ export class ImportHandler {
       }
 
       await mkdir(tempDir, { recursive: true });
-      await tar.extract({
-        file: archivePath,
-        cwd: tempDir
-      });
+      // Mandatory whole-archive fail-closed preflight, regardless of the legacy checkbox.
+      await extractLegacyArchive(archivePath, tempDir);
 
       if (onProgress) {
         onProgress({
@@ -120,7 +119,7 @@ export class ImportHandler {
       const errors: string[] = [];
       let validated = 0;
 
-      if (validateChecksum) {
+      if (true) {
         for (const file of manifest.files) {
           const filePath = path.join(tempDir, file.path);
 
@@ -154,6 +153,20 @@ export class ImportHandler {
         }
       }
 
+      if (errors.length) throw new Error('Checksum validation failed: ' + errors.join('; '));
+
+      // Check all existing artifacts for conflicts before any file is published.
+      const preservedTags = new Map<string, any>();
+      for (const file of manifest.files) {
+        const dest = await safeLegacyDestination(this.storagePath, file.path);
+        if (file.packageName && !preservedTags.has(file.packageName)) {
+          try { const local = JSON.parse(await readFile(path.join(this.storagePath, file.packageName, 'package.json'), 'utf8')); preservedTags.set(file.packageName, local['dist-tags'] || {}); } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
+        }
+        if (file.type === 'tarball') {
+          try { const existing = await stableRead(dest); if (existing.sha256 !== file.checksum) throw new Error('Same-path hash conflict; target preserved: ' + file.path); } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
+        }
+      }
+
       // 阶段 4: 导入文件
       if (onProgress) {
         onProgress({
@@ -176,7 +189,7 @@ export class ImportHandler {
       for (const file of manifest.files) {
         const normalizedPath = this.normalizePackagePath(file.path);
         const sourcePath = path.join(tempDir, file.path);
-        const destPath = path.join(this.storagePath, normalizedPath);
+        const destPath = await safeLegacyDestination(this.storagePath, normalizedPath);
 
         try {
           // 检查目标文件是否存在
@@ -188,14 +201,19 @@ export class ImportHandler {
             exists = false;
           }
 
-          if (exists && !overwrite) {
+          if (file.type === 'metadata') {
+            await mergeLegacyMetadata(sourcePath, destPath, file.packageName!);
+            imported++;
+            packages.add(file.packageName!);
+          } else if (exists) {
             skipped++;
             this.logger.debug({ path: file.path }, 'Skipping existing file: @{path}');
           } else {
             // 确保目标目录存在
             await mkdir(path.dirname(destPath), { recursive: true });
             // 复制文件
-            await copyFile(sourcePath, destPath);
+            const fs = await import('fs/promises');
+            try { await fs.link(sourcePath, destPath); } catch (e: any) { if (e.code !== 'EEXIST' || (await stableRead(destPath)).sha256 !== file.checksum) throw e; }
             imported++;
 
             if (file.packageName) {
@@ -287,6 +305,14 @@ export class ImportHandler {
               : '文件导入完成，但未配置元数据重建器'
           });
         }
+      }
+
+      // A rebuild must not move existing user/private dist-tags.
+      for (const [name, tags] of preservedTags) {
+        const mp = await safeLegacyDestination(this.storagePath, name + '/package.json');
+        const current = JSON.parse(await readFile(mp, 'utf8'));
+        current['dist-tags'] = { ...current['dist-tags'], ...tags };
+        await writeFile(mp, JSON.stringify(current, null, 2));
       }
 
       // 完成

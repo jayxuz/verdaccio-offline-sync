@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -47,7 +48,7 @@ describe('ImportHandler metadata rebuild', () => {
         path: packageFile,
         size: 15,
         mtime: new Date().toISOString(),
-        checksum: 'unused',
+        checksum: createHash('sha256').update('tarball-content').digest('hex'),
         type: 'tarball',
         packageName: 'demo',
         version: '2.0.0'

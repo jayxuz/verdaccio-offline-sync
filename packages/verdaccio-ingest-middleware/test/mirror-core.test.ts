@@ -99,7 +99,7 @@ test('archive preflight rejects traversal, symlink, duplicate entries, expansion
 });
 
 test('HTTP router serves full workflow, raw upload, inventories, saved time queries and safe UI',async()=>{
-  const {a,b}=await pair();await fixture(a);const app=express();app.use(mirrorRouter(a,'/a',{registryURL:'http://127.0.0.1'}));app.use(mirrorRouter(b,'/b',{registryURL:'http://127.0.0.1'}));const server=createServer(app);await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const addr=server.address() as any,base='http://127.0.0.1:'+addr.port;
+  const {a,b}=await pair();await fixture(a);const app=express();app.use((req,_res,next)=>{req.on('data',()=>{});next();});app.use(mirrorRouter(a,'/a',{registryURL:'http://127.0.0.1'}));app.use(mirrorRouter(b,'/b',{registryURL:'http://127.0.0.1'}));const server=createServer(app);await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const addr=server.address() as any,base='http://127.0.0.1:'+addr.port;
   const post=async(p:string,b:any)=>{const r=await fetch(base+p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});assert.equal(r.status,200,await r.clone().text());return r.json() as any;};
   try{
     const s=await post('/a/scan',{}),t=await post('/b/scan',{});const p=await post('/a/plan',{source_snapshot_id:s.snapshot_id,target:t});assert.equal(p.missing.length,1);

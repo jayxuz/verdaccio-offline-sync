@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { test, afterEach } from 'node:test';
+import tar from 'tar';
+import { ImportHandler } from '../src/import-handler';
+
+const dirs:string[]=[];const logger:any={info(){},debug(){},warn(){},error(){}};
+afterEach(async()=>{for(const p of dirs.splice(0))await fs.rm(p,{recursive:true,force:true});});
+async function root(){const p=await fs.mkdtemp(path.join(os.tmpdir(),'legacy-import-safety-'));dirs.push(p);return p;}
+async function archive(bad=false){const r=await root(),dir=path.join(r,'input'),file='demo/demo-1.0.0.tgz';await fs.mkdir(path.join(dir,'demo'),{recursive:true});await fs.writeFile(path.join(dir,file),'new-tgz');
+  const metadata={name:'demo',versions:{'1.0.0':{name:'demo',version:'1.0.0',description:'incoming'}},'dist-tags':{latest:'1.0.0'},_uplinks:{secret:{token:'never-copy'}}};await fs.writeFile(path.join(dir,'demo/package.json'),JSON.stringify(metadata));
+  const files=[];for(const p of [file,'demo/package.json']){const content=await fs.readFile(path.join(dir,p));files.push({path:p,size:content.length,checksum:bad?'0'.repeat(64):createHash('sha256').update(content).digest('hex'),mtime:new Date().toISOString(),type:p.endsWith('.tgz')?'tarball':'metadata',packageName:'demo',version:p.endsWith('.tgz')?'1.0.0':undefined});}
+  await fs.writeFile(path.join(dir,'.export-manifest.json'),JSON.stringify({version:1,exportId:'compat-v1',timestamp:new Date().toISOString(),type:'full',files,stats:{totalFiles:2,totalSize:100,packages:1,versions:1}}));const out=path.join(r,'legacy.tar.gz');await tar.create({cwd:dir,file:out,gzip:true},['.']);return out;
+}
+test('legacy v1 checksum mismatch is fail-closed even if old opt-out is requested',async()=>{const storage=await root();const handler=new ImportHandler(storage,logger);await assert.rejects(handler.importPackage(await archive(true),{validateChecksum:false}),/checksum/);await assert.rejects(fs.access(path.join(storage,'demo/demo-1.0.0.tgz')));await assert.rejects(fs.access(path.join(storage,'.import-history.json')));});
+test('legacy v1 merges metadata, keeps private target version/tags and strips source internal fields',async()=>{const storage=await root();await fs.mkdir(path.join(storage,'demo'));await fs.writeFile(path.join(storage,'demo/package.json'),JSON.stringify({name:'demo',versions:{'2.0.0':{name:'demo',version:'2.0.0',private:true}},'dist-tags':{latest:'2.0.0',private:'2.0.0'},_rev:'target-revision',local_secret:'keep'}));
+const handler=new ImportHandler(storage,logger,async()=>{const p=path.join(storage,'demo/package.json'),m=JSON.parse(await fs.readFile(p,'utf8'));m['dist-tags'].latest='9.0.0';await fs.writeFile(p,JSON.stringify(m));});
+const result=await handler.importPackage(await archive(),{overwrite:true});assert.equal(result.success,true);const m=JSON.parse(await fs.readFile(path.join(storage,'demo/package.json'),'utf8'));assert(m.versions['1.0.0']);assert(m.versions['2.0.0'].private);assert.equal(m['dist-tags'].latest,'2.0.0');assert.equal(m['dist-tags'].private,'2.0.0');assert.equal(m._rev,'target-revision');assert.equal(m.local_secret,'keep');assert.equal(m._uplinks,undefined);});
+test('legacy v1 conflicting tgz never overwrites target even when overwrite=true',async()=>{const storage=await root();await fs.mkdir(path.join(storage,'demo'));const file=path.join(storage,'demo/demo-1.0.0.tgz');await fs.writeFile(file,'target-only-bytes');const handler=new ImportHandler(storage,logger);await assert.rejects(handler.importPackage(await archive(),{overwrite:true}),/conflict/);assert.equal(await fs.readFile(file,'utf8'),'target-only-bytes');});
+test('legacy v1 refuses symbolic-link destination before writing',async()=>{const storage=await root(),outside=await root();await fs.symlink(outside,path.join(storage,'demo'));await assert.rejects(new ImportHandler(storage,logger).importPackage(await archive()),/Symlink/);assert.deepEqual(await fs.readdir(outside),[]);});

@@ -35,11 +35,14 @@ export class DifferentialScanner {
     since?: Date;
     includeMetadata?: boolean;
   }): Promise<ScannedFile[]> {
-    const { since, includeMetadata = true } = options;
+    // v1 timestamps are untrusted. Preserve archive compatibility by exporting a full scope.
+    const { includeMetadata = true } = options;
+    const since = undefined;
+    if (options.since) this.logger.warn('Legacy mtime baseline ignored; use mirror v2 inventories and verified receipts');
     const files: ScannedFile[] = [];
 
     this.logger.info(
-      { since: since?.toISOString(), includeMetadata },
+      { since: options.since?.toISOString(), includeMetadata },
       'Scanning modified files since @{since}'
     );
 
@@ -128,10 +131,8 @@ export class DifferentialScanner {
         )
       );
     } catch (error: any) {
-      this.logger.warn(
-        { path: absolutePath, error: error.message },
-        'Failed to scan directory @{path}: @{error}'
-      );
+      this.logger.warn({ path: absolutePath, error: error.message }, 'Incomplete scan; export aborted');
+      throw error;
     }
   }
 
@@ -211,12 +212,8 @@ export class DifferentialScanner {
    * 获取上次导出时间
    */
   async getLastExportTimestamp(): Promise<Date | null> {
-    const history = await this.readExportHistory();
-    if (history.exports.length === 0) {
-      return null;
-    }
-    const lastExport = history.exports[history.exports.length - 1];
-    return new Date(lastExport.timestampMs);
+    // Export history is not proof that a target accepted the artifacts.
+    return null;
   }
 
   /**
