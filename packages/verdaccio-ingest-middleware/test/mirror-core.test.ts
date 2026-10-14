@@ -6,6 +6,7 @@ import { afterEach, test } from 'node:test';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
+import { spawn } from 'node:child_process';
 import tar from 'tar';
 import express from 'express';
 import { MirrorRepository, reconcile, stableRead } from '../src/mirror-core';
@@ -143,4 +144,32 @@ test('late never-accepted forward receipt is superseded after a completed revers
 });
 test('traversal and nested compression are rejected before apply',async()=>{
   const B=new MirrorRepository(await root()),dir=await root(),header=new (tar as any).Header({path:'../escape',type:'File',size:1,mode:0o600,uid:0,gid:0});header.encode();const bad=path.join(dir,'traversal.tar.gz');await fs.writeFile(bad,gzipSync(Buffer.concat([header.block,Buffer.from('x'),Buffer.alloc(511+1024)])));await assert.rejects(B.import(bad),/Unsafe path/);const nested=path.join(dir,'nested.tar.gz');await fs.writeFile(nested,gzipSync(gzipSync(Buffer.alloc(4096))));await assert.rejects(B.import(nested),/Nested compression/);
+});
+test('a real source mutation during the same-stream staged read is rejected even when mtime is restored',async()=>{
+  const r=await root(),source=path.join(r,'source'),staged=path.join(r,'staged');await fs.writeFile(source,Buffer.alloc(32*1024*1024,7));const before=await fs.stat(source);
+  const reading=stableRead(source,staged).then(value=>({value,error:undefined as any}),error=>({value:undefined,error}));
+  let started=false;for(let i=0;i<300;i++){try{if((await fs.stat(staged)).size>0){started=true;break;}}catch{}await new Promise(resolve=>setTimeout(resolve,1));}assert.equal(started,true);
+  const f=await fs.open(source,'r+');try{await f.write(Buffer.from('changed'),0,7,0);}finally{await f.close();}await fs.utimes(source,before.atime,before.mtime);const result=await reading;assert.match(result.error?.message||'',/Source changed/);
+});
+test('process death after publication resumes with a dead-PID atomic lock and applying journal',async()=>{
+  const {a,A,B}=await pair();await fixture(a,'one');await fixture(a,'two');const e=await transfer(A,B);
+  const childCode=`require(${JSON.stringify(require.resolve('tsx/cjs'))});const {MirrorRepository}=require(${JSON.stringify(path.resolve(__dirname,'../src/mirror-core.ts'))});new MirrorRepository(${JSON.stringify(B.storage)},{hooks:{afterArtifact:async()=>process.exit(77)}}).import(${JSON.stringify(e.archive)}).catch(e=>{console.error(e);process.exit(1)});`;
+  const child=spawn(process.execPath,['-e',childCode],{stdio:'ignore'});const code=await new Promise<number|null>((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});assert.equal(code,77);assert.equal((await B.status()).transfers[0].state,'applying');const receipt=await B.import(e.archive);assert.equal(receipt.status,'verified');assert.equal((await B.scan()).artifacts.length,2);
+});
+test('two real processes cannot both reclaim a dead owner or enter the critical section', {timeout:15000},async()=>{
+  const r=await root(),A=new MirrorRepository(r);await A.init();await fs.symlink('pid-2147483647-'+randomUUID(),path.join(A.state,'writer.lock'));
+  const code=(role:string)=>`require(${JSON.stringify(require.resolve('tsx/cjs'))});const fs=require('fs/promises'),{MirrorRepository}=require(${JSON.stringify(path.resolve(__dirname,'../src/mirror-core.ts'))});const role=${JSON.stringify(role)},root=${JSON.stringify(r)};process.on('message',async m=>{if(m!=='go')return;try{await new MirrorRepository(root,{hooks:{beforeReclaim:async()=>{process.send({type:'checked'});if(role==='a')await new Promise(resolve=>process.once('message',resolve));},afterWalk:async()=>{let f;try{f=await fs.open(root+'/.critical-guard','wx');}catch(e){process.send({type:'overlap'});throw e;}process.send({type:'entered'});await new Promise(resolve=>setTimeout(resolve,150));await f.close();await fs.unlink(root+'/.critical-guard');}}}).scan();process.send({type:'done'},()=>process.exit(0));}catch(e){process.send({type:'error',error:e.message},()=>process.exit(/already running/.test(e.message)?2:1));}});process.send({type:'ready'});`;
+  const launch=(role:string)=>{const child=spawn(process.execPath,['-e',code(role)],{stdio:['ignore','ignore','ignore','ipc']}),messages:any[]=[];child.on('message',m=>messages.push(m));const exit=new Promise<number|null>((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});const message=async(type:string)=>{for(let n=0;n<1000;n++){const found=messages.find(m=>m.type===type);if(found)return found;if(child.exitCode!==null)throw Error('Child exited before '+type);await new Promise(resolve=>setTimeout(resolve,2));}throw Error('Child message timeout '+type);};return {child,messages,exit,message};};
+  const a=launch('a'),b=launch('b');try{await Promise.all([a.message('ready'),b.message('ready')]);a.child.send('go');await a.message('checked');b.child.send('go');const second=await Promise.race([b.exit.then(code=>({exit:code})),b.message('entered').then(()=>({entered:true}))]);a.child.send('release');const [ac,bc]=await Promise.all([a.exit,b.exit]);assert.equal(ac,0);assert.equal(bc,2);assert('exit'in second);assert.equal([...a.messages,...b.messages].filter(m=>m.type==='entered').length,1);assert.equal([...a.messages,...b.messages].some(m=>m.type==='overlap'),false);}finally{for(const c of [a,b])if(c.child.exitCode===null)c.child.kill('SIGTERM');}
+});
+test('a durable unindexed snapshot is recovered before a later scan and matches full historical rebuild',async()=>{
+  const r=await root(),A=new MirrorRepository(r);await A.scan();const prior=JSON.parse(await fs.readFile(path.join(A.state,'index.json'),'utf8'));await fixture(r,'transient');
+  const code=`require(${JSON.stringify(require.resolve('tsx/cjs'))});const {MirrorRepository}=require(${JSON.stringify(path.resolve(__dirname,'../src/mirror-core.ts'))});new MirrorRepository(${JSON.stringify(r)},{hooks:{afterSnapshotSaved:async()=>process.exit(78)}}).scan().catch(()=>process.exit(1));`;
+  const child=spawn(process.execPath,['-e',code],{stdio:'ignore'});assert.equal(await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);}),78);assert.equal(JSON.parse(await fs.readFile(path.join(A.state,'index.json'),'utf8')).checksum,prior.checksum);
+  assert.equal((await A.changes({package:'transient'})).events[0].change,'added');await fs.rm(path.join(r,'transient'),{recursive:true});await A.scan();const recovered=await A.changes({package:'transient'});assert.deepEqual(recovered.events.map((e:any)=>e.change),['added','removed']);await A.rebuildHistoryIndex();assert.deepEqual((await A.changes({package:'transient'})).events,recovered.events);
+});
+test('metadata-only and pure metadata changes are indexed, with an inclusive UTC hit interval',async()=>{
+  const r=await root(),A=new MirrorRepository(r);await fs.mkdir(path.join(r,'metadata-only'));await fs.writeFile(path.join(r,'metadata-only/package.json'),JSON.stringify({name:'metadata-only',versions:{'1.0.0':{name:'metadata-only',version:'1.0.0'}},'dist-tags':{latest:'1.0.0'}}));await fixture(r,'stored');const first=await A.scan();assert.equal((await A.changes({package:'metadata-only'})).events[0].change,'metadata-only');
+  await new Promise(resolve=>setTimeout(resolve,5));const mp=path.join(r,'stored/package.json'),m=JSON.parse(await fs.readFile(mp,'utf8'));m.versions['1.0.0'].description='metadata changed, same tgz';await fs.writeFile(mp,JSON.stringify(m));const second=await A.scan();assert.equal(first.artifact_root,second.artifact_root);
+  const hit=await A.changes({package:'stored',version:'1.0.0',from_time:second.ended_at,to_time:second.ended_at});assert.equal(hit.total,1);assert.equal(hit.events[0].change,'metadata-changed');assert.equal(hit.events[0].sequence,second.sequence);
 });

@@ -20,7 +20,7 @@ export type Snapshot = { schema: number; sequence: number; repo_id: string; scop
 export type Transfer = { schema: number; scope_id: string; transfer_id: string; source_repo_id: string; target_repo_id: string; base_root: string; source_root: string; expected_artifact_root: string; source: Snapshot; target: Snapshot; files: Artifact[]; metadata_adapter: string };
 export type Receipt = { schema: number; scope_id: string; transfer_id: string; source_repo_id: string; target_repo_id: string; base_root: string; source_root: string; source_snapshot_seq: number; target_snapshot_seq: number; expected_artifact_root: string; target_root: string; target_snapshot_id: string; verified_at: string; status: string; receipt_hash: string };
 type Journal = { transfer: Transfer; state: string; receipt?: Receipt; error?: string };
-export type MirrorOptions = { registryURL?: string; maxBytes?: number; maxEntries?: number; maxFileBytes?: number; maxJSONBytes?: number; onImported?: (names:string[])=>Promise<void>; now?:()=>Date; hooks?: { afterWalk?: () => Promise<void>; beforeStage?: () => Promise<void>; afterArtifact?: () => Promise<void> } };
+export type MirrorOptions = { registryURL?: string; maxBytes?: number; maxEntries?: number; maxFileBytes?: number; maxJSONBytes?: number; onImported?: (names:string[])=>Promise<void>; now?:()=>Date; hooks?: { afterWalk?: () => Promise<void>; beforeStage?: () => Promise<void>; afterArtifact?: () => Promise<void>; beforeReclaim?:()=>Promise<void>; afterSnapshotSaved?:()=>Promise<void> } };
 
 export function stable(value: any): string {
   if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
@@ -159,13 +159,36 @@ export class MirrorRepository {
   async init(): Promise<string> {
     const s = await fs.lstat(this.storage); if(!s.isDirectory() || s.isSymbolicLink()) throw new Error('Storage root must be a real directory');
     await fs.mkdir(this.state,{recursive:true}); if((await fs.lstat(this.state)).isSymbolicLink()) throw new Error('Unsafe mirror state directory');
-    for(const child of ['snapshots','transfers','archives','staging','imports','uploads','conflicts']){const p=path.join(this.state,child);await fs.mkdir(p,{recursive:true});const s=await fs.lstat(p);if(!s.isDirectory()||s.isSymbolicLink())throw new Error('Unsafe mirror state subdirectory: '+child);}
+    for(const child of ['snapshots','transfers','archives','staging','imports','uploads','conflicts','writers']){const p=path.join(this.state,child);await fs.mkdir(p,{recursive:true});const s=await fs.lstat(p);if(!s.isDirectory()||s.isSymbolicLink())throw new Error('Unsafe mirror state subdirectory: '+child);}
     const file = path.join(this.state,'repository.json');
     if(!await exists(file)) { try { const f=await fs.open(file,'wx',0o600); try{await f.writeFile(JSON.stringify({schema:SCHEMA,repo_id:randomUUID(),scope_id:SCOPE})); await f.sync();} finally{await f.close();} }catch(e:any){if(e.code!=='EEXIST')throw e;} }
     for(const p of [this.state,this.storage]){const d=await fs.open(p,'r');try{await d.sync();}finally{await d.close();}}
     const id=await json(file); safeID(id.repo_id); if(id.scope_id!==SCOPE)throw new Error('Unsupported repository scope'); return id.repo_id;
   }
   private async locked<T>(action:()=>Promise<T>):Promise<T> {
+    // Unique immutable tickets avoid compare-then-unlink on a shared stale lock.
+    // A choosing flag is visible before selecting max(ticket)+1; ties use the unique owner id.
+    // Contenders fail closed instead of waiting. Dead owners' immutable records never block entry.
+    await this.init();const dir=path.join(this.state,'writers'),id=`${process.pid}-${randomUUID()}`,record=path.join(dir,'owner-'+id),temp=path.join(this.state,'.writer-ticket-'+id);let ownState='choosing';
+    const ownerAlive=(pid:number):boolean=>{try{process.kill(pid,0);return true;}catch(e:any){if(e.code==='ESRCH')return false;if(e.code==='EPERM')return true;throw e;}};
+    const readState=async(file:string):Promise<string|undefined>=>{try{return await fs.readlink(file);}catch(e:any){if(e.code==='ENOENT')return undefined;throw e;}};
+    await fs.symlink(ownState,record);
+    try{
+      let number=0n;for(const entry of await fs.readdir(dir)){const state=await readState(path.join(dir,entry)),m=/^ticket-(\d+)$/.exec(state||'');if(m&&BigInt(m[1])>number)number=BigInt(m[1]);}number++;
+      // Replace the target of one persistent participant record atomically: no disappearing choosing flag.
+      const selected='ticket-'+number;await fs.symlink(selected,temp);await fs.rename(temp,record);ownState=selected;
+      for(const entry of await fs.readdir(dir)){
+        if(path.join(dir,entry)===record)continue;
+        const owner=/^owner-(\d+)-([a-f0-9-]+)$/.exec(entry);if(!owner)throw new Error('Unknown writer coordination record');const pid=Number(owner[1]);
+        if(!ownerAlive(pid))continue;
+        const target=await readState(path.join(dir,entry));if(target===undefined)continue;const ticket=/^ticket-(\d+)$/.exec(target),otherID=`${owner[1]}-${owner[2]}`;
+        if(target!=='choosing'&&!ticket)throw new Error('Invalid writer coordination owner');
+        if(target==='choosing'||BigInt(ticket![1])<number||BigInt(ticket![1])===number&&otherID<id)throw new Error('Mirror operation already running');
+      }
+      return await this.legacyLocked(action);
+    }finally{if(await readState(record)===ownState)await fs.unlink(record);try{await fs.unlink(temp);}catch(e:any){if(e.code!=='ENOENT')throw e;}}
+  }
+  private async legacyLocked<T>(action:()=>Promise<T>):Promise<T> {
     await this.init();const lock=path.join(this.state,'writer.lock'),token=`pid-${process.pid}-${randomUUID()}`;
     for(let attempt=0;;attempt++){
       try{await fs.symlink(token,lock);break;}catch(e:any){if(e.code!=='EEXIST'||attempt>2)throw e;}
@@ -186,11 +209,11 @@ export class MirrorRepository {
             }catch(err:any){if(!['ENOENT','ESRCH'].includes(err.code))throw err;}
           }
           if(fingerprint(await fs.lstat(lock,{bigint:true}))!==fingerprint(s))throw new Error('Legacy lock changed while checking ownership; retry');
-          await fs.rename(lock,lock+'.recovered-'+randomUUID());continue;
+          await this.options.hooks?.beforeReclaim?.();await fs.rename(lock,lock+'.recovered-'+randomUUID());continue;
         }
       }
       let alive=true;try{process.kill(pid!,0);}catch(e:any){if(e.code==='ESRCH')alive=false;else throw e;}
-      if(alive)throw new Error('Mirror operation already running');await fs.unlink(lock);
+      if(alive)throw new Error('Mirror operation already running');await this.options.hooks?.beforeReclaim?.();await fs.unlink(lock);
     }
     try{return await action();}finally{try{if(await fs.readlink(lock)===token)await fs.unlink(lock);}catch(e:any){if(e.code!=='ENOENT')throw e;}}
   }
@@ -249,6 +272,7 @@ export class MirrorRepository {
     const s:Snapshot={schema:SCHEMA,sequence,repo_id,scope_id:SCOPE,snapshot_id:randomUUID(),started_at,ended_at:new Date().toISOString(),semantics:'verified-scan-interval',complete:errors.length===0,errors,artifacts,metadata,metadata_missing_artifacts:missing.sort(),root:'',artifact_root:artifactRoot(artifacts)};
     s.root=digest(semantic(s));
     await atomic(path.join(this.state,'snapshots',s.snapshot_id+'.json'),s);
+    await this.options.hooks?.afterSnapshotSaved?.();
     if(s.complete)await this.updateIndex(s);
     return s;
   }
@@ -265,14 +289,20 @@ export class MirrorRepository {
       const event={sequence:s.sequence,snapshot_id:s.snapshot_id,started_at:s.started_at,ended_at:s.ended_at,change,...item};
       index.by_identity[k]={package:item.package,version:item.version,last:item,events:[...(old?.events||[]),event]};
     }
-    index.head={snapshot_id:s.snapshot_id,sequence:s.sequence,root:s.root,artifact_root:s.artifact_root};index.snapshot_id=s.snapshot_id;
+    index.head={snapshot_id:s.snapshot_id,sequence:s.sequence,root:s.root,artifact_root:s.artifact_root};index.snapshot_id=s.snapshot_id;index.seen_snapshot_ids=index.seen_snapshot_ids||[];if(!index.seen_snapshot_ids.includes(s.snapshot_id))index.seen_snapshot_ids.push(s.snapshot_id);
   }
   private async rebuiltIndex():Promise<any>{
-    const repo_id=await this.init(),index:any={schema:SCHEMA,repo_id,kind:'package-version-observation-index',by_identity:{},head:null};const snapshots:Snapshot[]=[];
-    for(const f of await fs.readdir(path.join(this.state,'snapshots'))){if(!f.endsWith('.json'))continue;const s=await json(path.join(this.state,'snapshots',f));if(s.repo_id===repo_id&&s.complete&&Number.isSafeInteger(s.sequence)){validateSnapshot(s);snapshots.push(s);}}
+    const repo_id=await this.init(),index:any={schema:SCHEMA,repo_id,kind:'package-version-observation-index',by_identity:{},head:null,seen_snapshot_ids:[]};const snapshots:Snapshot[]=[];
+    for(const f of await fs.readdir(path.join(this.state,'snapshots'))){if(!f.endsWith('.json'))continue;const s=await json(path.join(this.state,'snapshots',f));index.seen_snapshot_ids.push(s.snapshot_id);if(s.repo_id===repo_id&&s.complete&&Number.isSafeInteger(s.sequence)){validateSnapshot(s);snapshots.push(s);}}
     for(const s of snapshots.sort((a,b)=>a.sequence-b.sequence))this.indexObservation(index,s);return index;
   }
-  private async index():Promise<any>{try{const {checksum,...body}=await json(path.join(this.state,'index.json'));if(body.repo_id!==await this.init()||body.kind!=='package-version-observation-index'||checksum!==digest(body))throw new Error('Index drift');return body;}catch{return this.rebuiltIndex();}}
+  private async index():Promise<any>{
+    let body:any;try{const {checksum,...value}=await json(path.join(this.state,'index.json'));if(value.repo_id!==await this.init()||value.kind!=='package-version-observation-index'||!Array.isArray(value.seen_snapshot_ids)||checksum!==digest(value))throw new Error('Index drift');body=value;}catch{return this.rebuiltIndex();}
+    // A valid old checksum does not prove all durable snapshots were indexed. Inspect every unknown id.
+    const seen=new Set(body.seen_snapshot_ids),pending:Snapshot[]=[];
+    for(const file of await fs.readdir(path.join(this.state,'snapshots'))){if(!file.endsWith('.json')||seen.has(file.slice(0,-5)))continue;const s=await json(path.join(this.state,'snapshots',file));body.seen_snapshot_ids.push(s.snapshot_id);if(s.repo_id===body.repo_id&&s.complete){validateSnapshot(s);if(body.head&&s.sequence<=body.head.sequence)return this.rebuiltIndex();pending.push(s);}}
+    for(const s of pending.sort((a,b)=>a.sequence-b.sequence))this.indexObservation(body,s);return body;
+  }
   private async updateIndex(s:Snapshot):Promise<void>{const index=await this.index();if(!index.head||index.head.sequence<s.sequence)this.indexObservation(index,s);await atomic(path.join(this.state,'index.json'),{...index,checksum:digest(index)});}
   async rebuildHistoryIndex():Promise<any>{return this.locked(async()=>{const index=await this.rebuiltIndex();await atomic(path.join(this.state,'index.json'),{...index,checksum:digest(index)});return {head:index.head,identities:Object.keys(index.by_identity).length,semantics:'saved-successful-scan-observations'};});}
   async changes(query:{package?:string;version?:string;from_sequence?:number;to_sequence?:number;from_time?:string;to_time?:string;limit?:number}={}):Promise<any>{
