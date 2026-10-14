@@ -1,3 +1,6 @@
+import { projectPackageFields } from './mirror-core';
+import { pipeline } from 'stream/promises';
+import { Transform } from 'stream';
 import { createReadStream } from 'fs';
 import { createGunzip } from 'zlib';
 import tar from 'tar-stream';
@@ -73,7 +76,7 @@ export class MetadataPatcher {
         };
 
         // 更新 time
-        patchedManifest.time[tarball.version] = tarball.mtime.toISOString();
+        // A cached tgz does not establish an authoritative publication timestamp.
 
         this.logger.debug(
           { version: tarball.version },
@@ -96,48 +99,24 @@ export class MetadataPatcher {
   /**
    * 从 tarball 中提取 package.json
    */
-  private extractPackageJson(tarballPath: string): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const extract = tar.extract();
-      let packageJson: any = null;
-
-      extract.on('entry', (header, stream, next) => {
-        const chunks: Buffer[] = [];
-
-        // package.json 通常在 package/package.json
-        if (
-          header.name.endsWith('package.json') &&
-          header.name.split('/').length === 2
-        ) {
-          stream.on('data', (chunk) => chunks.push(chunk));
-          stream.on('end', () => {
-            try {
-              packageJson = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            } catch (e) {
-              // 忽略解析错误
-            }
-            next();
-          });
-        } else {
-          stream.resume();
-          stream.on('end', next);
-        }
-      });
-
-      extract.on('finish', () => {
-        if (packageJson) {
-          resolve(packageJson);
-        } else {
-          reject(new Error('package.json not found in tarball'));
-        }
-      });
-
-      extract.on('error', reject);
-
-      createReadStream(tarballPath)
-        .pipe(createGunzip())
-        .pipe(extract);
+  private async extractPackageJson(tarballPath: string): Promise<any> {
+    const extract = tar.extract();
+    let packageJson: any, hasBindingGyp = false, manifests = 0, expanded = 0, entries = 0;
+    extract.on('entry', (header, stream, next) => {
+      if (++entries > 500000) { extract.destroy(new Error('Tarball entry limit')); return; }
+      const name = header.name.replace(/^(\.\/)+/, '');
+      if (name === 'package/binding.gyp') hasBindingGyp = true;
+      if (name !== 'package/package.json') { stream.resume(); stream.on('end', next); return; }
+      if (++manifests !== 1 || header.type !== 'file' || (header.size || 0) > 16 * 1024 ** 2) { extract.destroy(new Error('Invalid package manifest in tgz')); return; }
+      const chunks: Buffer[] = []; let size = 0;
+      stream.on('data', (chunk: Buffer) => { size += chunk.length; if (size > 16 * 1024 ** 2) extract.destroy(new Error('Package JSON size limit')); else chunks.push(chunk); });
+      stream.on('end', () => { try { packageJson = JSON.parse(Buffer.concat(chunks).toString('utf8')); next(); } catch (error) { extract.destroy(error as Error); } });
     });
+    const limit = new Transform({ transform(chunk, _encoding, callback) { expanded += chunk.length; callback(expanded > 20 * 1024 ** 3 ? new Error('Tarball expansion limit') : null, chunk); } });
+    await pipeline(createReadStream(tarballPath), createGunzip(), limit, extract);
+    if (!packageJson) throw new Error('package/package.json not found in tarball');
+    Object.defineProperty(packageJson, '__mirrorHasBindingGyp', { value: hasBindingGyp, enumerable: false });
+    return packageJson;
   }
 
   /**
@@ -162,11 +141,13 @@ export class MetadataPatcher {
 
     // 构建完整的 Version 对象
     const version = {
+      ...projectPackageFields(packageJson),
       name: packageJson.name,
       version: tarball.version,
       description: packageJson.description || '',
       main: packageJson.main || 'index.js',
       scripts: packageJson.scripts || {},
+      hasInstallScript: Boolean(packageJson.scripts?.preinstall || packageJson.scripts?.install || packageJson.scripts?.postinstall || (packageJson.__mirrorHasBindingGyp && packageJson.gypfile !== false)),
       dependencies: packageJson.dependencies || {},
       devDependencies: packageJson.devDependencies || {},
       peerDependencies: packageJson.peerDependencies || {},

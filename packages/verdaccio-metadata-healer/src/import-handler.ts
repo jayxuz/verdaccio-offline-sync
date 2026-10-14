@@ -210,6 +210,8 @@ export class ImportHandler {
             packages.add(file.packageName!);
           } else if (exists) {
             skipped++;
+            // A retry must rebuild/register metadata even when every tgz was already published.
+            if (file.packageName) packages.add(this.normalizePackagePath(file.packageName));
             this.logger.debug({ path: file.path }, 'Skipping existing file: @{path}');
           } else {
             // 确保目标目录存在

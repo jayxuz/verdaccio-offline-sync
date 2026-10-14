@@ -14,17 +14,23 @@ export const SCOPE = 'verdaccio-artifacts-v2';
 const SCHEMA = 2;
 const HEX = /^[a-f0-9]{64}$/;
 const NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i;
-const VERSION_FIELDS = ['name','version','description','main','module','types','typings','bin','files','exports','imports','browser','scripts','dependencies','devDependencies','optionalDependencies','peerDependencies','peerDependenciesMeta','bundleDependencies','bundledDependencies','engines','os','cpu','libc','repository','keywords','author','license','bugs','homepage','deprecated','funding'];
+const VERSION_FIELDS = ['name','version','description','main','module','types','typings','typesVersions','type','sideEffects','bin','man','directories','files','exports','imports','browser','scripts','config','gypfile','hasInstallScript','dependencies','devDependencies','optionalDependencies','peerDependencies','peerDependenciesMeta','bundleDependencies','bundledDependencies','overrides','engines','devEngines','os','cpu','libc','repository','keywords','author','contributors','license','bugs','homepage','deprecated','funding','packageManager','workspaces'];
+export function projectPackageFields(raw:any):any{const out:any={};for(const field of VERSION_FIELDS)if(raw[field]!==undefined)out[field]=raw[field];return out;}
 export type Artifact = { package: string; version: string; path: string; sha256: string; sha1: string; integrity: string; size: number; aliases: string[] };
 export type Snapshot = { schema: number; sequence: number; repo_id: string; scope_id: string; snapshot_id: string; started_at: string; ended_at: string; semantics: string; complete: boolean; errors: string[]; artifacts: Artifact[]; metadata: Record<string, any>; metadata_missing_artifacts: string[]; root: string; artifact_root: string };
 export type Transfer = { schema: number; scope_id: string; transfer_id: string; source_repo_id: string; target_repo_id: string; base_root: string; source_root: string; expected_artifact_root: string; source: Snapshot; target: Snapshot; files: Artifact[]; metadata_adapter: string };
 export type Receipt = { schema: number; scope_id: string; transfer_id: string; source_repo_id: string; target_repo_id: string; base_root: string; source_root: string; source_snapshot_seq: number; target_snapshot_seq: number; expected_artifact_root: string; target_root: string; target_snapshot_id: string; verified_at: string; status: string; receipt_hash: string };
 type Journal = { transfer: Transfer; state: string; receipt?: Receipt; error?: string };
-export type MirrorOptions = { registryURL?: string; maxBytes?: number; maxEntries?: number; maxFileBytes?: number; maxJSONBytes?: number; onImported?: (names:string[])=>Promise<void>; now?:()=>Date; hooks?: { afterWalk?: () => Promise<void>; beforeStage?: () => Promise<void>; afterArtifact?: () => Promise<void>; beforeReclaim?:()=>Promise<void>; afterSnapshotSaved?:()=>Promise<void> } };
+export type WriterIdentity={pid:number;boot_id:string;start_time:string;pid_namespace:string};
+const validIdentity=(o:any):boolean=>o&&Number.isSafeInteger(o.pid)&&o.pid>0&&o.pid<=2147483647&&/^[a-f0-9-]{36}$/.test(o.boot_id)&&/^\d+$/.test(o.start_time)&&/^pid:\[\d+\]$/.test(o.pid_namespace);
+async function processStart(pid:number):Promise<string>{const raw=await fs.readFile(`/proc/${pid}/stat`,'utf8'),start=raw.slice(raw.lastIndexOf(')')+2).trim().split(/\s+/)[19];if(!/^\d+$/.test(start))throw new Error('Cannot verify process start identity');return start;}
+export async function getWriterIdentity():Promise<WriterIdentity>{if(process.platform!=='linux')throw new Error('Mirror writer locking requires Linux boot/proc identity; this platform fails closed');const identity={pid:process.pid,boot_id:(await fs.readFile('/proc/sys/kernel/random/boot_id','utf8')).trim(),start_time:await processStart(process.pid),pid_namespace:await fs.readlink('/proc/self/ns/pid')};if(!validIdentity(identity))throw new Error('Cannot verify Linux writer identity');return identity;}
+async function sameProcessAlive(owner:WriterIdentity,current:WriterIdentity):Promise<boolean>{if(owner.boot_id!==current.boot_id)return false;if(owner.pid_namespace!==current.pid_namespace)throw new Error('Writer record belongs to another PID namespace; verify ownership manually before sharing this cache');try{return await processStart(owner.pid)===owner.start_time;}catch(e:any){if(e.code==='ENOENT'||e.code==='ESRCH')return false;throw new Error('Cannot verify writer process identity; refusing takeover: '+e.message);}}
+export type MirrorOptions = { registryURL?: string; maxBytes?: number; maxEntries?: number; maxFileBytes?: number; maxJSONBytes?: number; onImported?: (names:string[])=>Promise<void>; now?:()=>Date; hooks?: { afterWalk?: () => Promise<void>; beforeStage?: () => Promise<void>; afterArtifact?: () => Promise<void>; beforeReclaim?:()=>Promise<void>; afterSnapshotSaved?:()=>Promise<void>; afterWriterChoosing?:()=>Promise<void>; afterWriterTicket?:()=>Promise<void> } };
 
 export function stable(value: any): string {
   if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
-  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().filter(k => value[k] !== undefined).map(k => JSON.stringify(k) + ':' + stable(value[k])).join(',') + '}';
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().filter(k => value[k] !== undefined).map(k => JSON.stringify(k) + ':' + (k==='exports'||k==='imports'?JSON.stringify(value[k]):stable(value[k]))).join(',') + '}';
   return JSON.stringify(value);
 }
 export const digest = (v: any): string => createHash('sha256').update(stable(v)).digest('hex');
@@ -169,33 +175,32 @@ export class MirrorRepository {
     // Unique immutable tickets avoid compare-then-unlink on a shared stale lock.
     // A choosing flag is visible before selecting max(ticket)+1; ties use the unique owner id.
     // Contenders fail closed instead of waiting. Dead owners' immutable records never block entry.
-    await this.init();const dir=path.join(this.state,'writers'),id=`${process.pid}-${randomUUID()}`,record=path.join(dir,'owner-'+id),temp=path.join(this.state,'.writer-ticket-'+id);let ownState='choosing';
-    const ownerAlive=(pid:number):boolean=>{try{process.kill(pid,0);return true;}catch(e:any){if(e.code==='ESRCH')return false;if(e.code==='EPERM')return true;throw e;}};
+    const identity=await getWriterIdentity();await this.init();const dir=path.join(this.state,'writers'),id=`${process.pid}-${randomUUID()}`,record=path.join(dir,'owner-'+id),temp=path.join(this.state,'.writer-ticket-'+id);let ownState=JSON.stringify({...identity,state:'choosing'});
     const readState=async(file:string):Promise<string|undefined>=>{try{return await fs.readlink(file);}catch(e:any){if(e.code==='ENOENT')return undefined;throw e;}};
+    const parseState=(value:string):any=>{const o=JSON.parse(value);if(!validIdentity(o)||!['choosing','ticket'].includes(o.state)||o.state==='ticket'&&(!/^\d+$/.test(o.number)||BigInt(o.number)<1n))throw new Error('Invalid writer startup identity');return o;};
     await fs.symlink(ownState,record);
     try{
-      let number=0n;for(const entry of await fs.readdir(dir)){const state=await readState(path.join(dir,entry)),m=/^ticket-(\d+)$/.exec(state||'');if(m&&BigInt(m[1])>number)number=BigInt(m[1]);}number++;
+      await this.options.hooks?.afterWriterChoosing?.();
+      let number=0n;for(const entry of await fs.readdir(dir)){const value=await readState(path.join(dir,entry));if(!value)continue;const state=parseState(value);if(state.state==='ticket'&&await sameProcessAlive(state,identity)&&BigInt(state.number)>number)number=BigInt(state.number);}number++;
       // Replace the target of one persistent participant record atomically: no disappearing choosing flag.
-      const selected='ticket-'+number;await fs.symlink(selected,temp);await fs.rename(temp,record);ownState=selected;
+      const selected=JSON.stringify({...identity,state:'ticket',number:number.toString()});await fs.symlink(selected,temp);await fs.rename(temp,record);ownState=selected;await this.options.hooks?.afterWriterTicket?.();
       for(const entry of await fs.readdir(dir)){
         if(path.join(dir,entry)===record)continue;
-        const owner=/^owner-(\d+)-([a-f0-9-]+)$/.exec(entry);if(!owner)throw new Error('Unknown writer coordination record');const pid=Number(owner[1]);
-        if(!ownerAlive(pid))continue;
-        const target=await readState(path.join(dir,entry));if(target===undefined)continue;const ticket=/^ticket-(\d+)$/.exec(target),otherID=`${owner[1]}-${owner[2]}`;
-        if(target!=='choosing'&&!ticket)throw new Error('Invalid writer coordination owner');
-        if(target==='choosing'||BigInt(ticket![1])<number||BigInt(ticket![1])===number&&otherID<id)throw new Error('Mirror operation already running');
+        const owner=/^owner-(\d+)-([a-f0-9-]+)$/.exec(entry);if(!owner)throw new Error('Unknown writer coordination record');
+        const target=await readState(path.join(dir,entry));if(target===undefined)continue;const state=parseState(target),otherID=`${owner[1]}-${owner[2]}`;if(state.pid!==Number(owner[1]))throw new Error('Writer record PID mismatch');if(!await sameProcessAlive(state,identity))continue;
+        if(state.state==='choosing'||BigInt(state.number)<number||BigInt(state.number)===number&&otherID<id)throw new Error('Mirror operation already running');
       }
-      return await this.legacyLocked(action);
+      return await this.legacyLocked(action,identity);
     }finally{if(await readState(record)===ownState)await fs.unlink(record);try{await fs.unlink(temp);}catch(e:any){if(e.code!=='ENOENT')throw e;}}
   }
-  private async legacyLocked<T>(action:()=>Promise<T>):Promise<T> {
-    await this.init();const lock=path.join(this.state,'writer.lock'),token=`pid-${process.pid}-${randomUUID()}`;
+  private async legacyLocked<T>(action:()=>Promise<T>,identity:WriterIdentity):Promise<T> {
+    await this.init();const lock=path.join(this.state,'writer.lock'),token=JSON.stringify({...identity,token:randomUUID()});
     for(let attempt=0;;attempt++){
       try{await fs.symlink(token,lock);break;}catch(e:any){if(e.code!=='EEXIST'||attempt>2)throw e;}
-      const s=await fs.lstat(lock,{bigint:true});let pid:number|undefined;
-      if(s.isSymbolicLink()){const owner=await fs.readlink(lock),m=/^pid-(\d+)-[a-f0-9-]+$/.exec(owner);if(!m)throw new Error('Unknown writer lock format; ownership must be checked manually');pid=Number(m[1]);}
+      const s=await fs.lstat(lock,{bigint:true});let pid:number|undefined,priorIdentity:WriterIdentity|undefined;
+      if(s.isSymbolicLink()){const owner=await fs.readlink(lock);try{const parsed=JSON.parse(owner);if(validIdentity(parsed)){priorIdentity=parsed;pid=parsed.pid;}}catch{}if(!priorIdentity){const m=/^pid-(\d+)-[a-f0-9-]+$/.exec(owner);if(!m)throw new Error('Unknown writer lock format; ownership must be checked manually');pid=Number(m[1]);}}
       else{
-        try{pid=(await json(lock)).pid;}catch{/* Recover malformed legacy locks only after proving no live file descriptor holds them. */}
+        try{const parsed=await json(lock);pid=parsed.pid;if(validIdentity(parsed))priorIdentity=parsed;}catch{/* Recover malformed legacy locks only after proving no live file descriptor holds them. */}
         if(!Number.isSafeInteger(pid)||!pid){
           if(process.platform!=='linux')throw new Error('Cannot verify incomplete legacy lock ownership on this platform');
           for(const entry of await fs.readdir('/proc')){
@@ -212,7 +217,7 @@ export class MirrorRepository {
           await this.options.hooks?.beforeReclaim?.();await fs.rename(lock,lock+'.recovered-'+randomUUID());continue;
         }
       }
-      let alive=true;try{process.kill(pid!,0);}catch(e:any){if(e.code==='ESRCH')alive=false;else throw e;}
+      let alive=true;if(priorIdentity)alive=await sameProcessAlive(priorIdentity,identity);else try{process.kill(pid!,0);}catch(e:any){if(e.code==='ESRCH')alive=false;else throw e;}
       if(alive)throw new Error('Mirror operation already running');await this.options.hooks?.beforeReclaim?.();await fs.unlink(lock);
     }
     try{return await action();}finally{try{if(await fs.readlink(lock)===token)await fs.unlink(lock);}catch(e:any){if(e.code!=='ENOENT')throw e;}}

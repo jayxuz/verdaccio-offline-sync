@@ -9,7 +9,7 @@ import { gzipSync } from 'node:zlib';
 import { spawn } from 'node:child_process';
 import tar from 'tar';
 import express from 'express';
-import { MirrorRepository, reconcile, stableRead } from '../src/mirror-core';
+import { MirrorRepository, reconcile, stableRead, getWriterIdentity } from '../src/mirror-core';
 import { mirrorRouter, mirrorHTML } from '../src/mirror-router';
 
 const roots:string[]=[];
@@ -172,4 +172,17 @@ test('metadata-only and pure metadata changes are indexed, with an inclusive UTC
   const r=await root(),A=new MirrorRepository(r);await fs.mkdir(path.join(r,'metadata-only'));await fs.writeFile(path.join(r,'metadata-only/package.json'),JSON.stringify({name:'metadata-only',versions:{'1.0.0':{name:'metadata-only',version:'1.0.0'}},'dist-tags':{latest:'1.0.0'}}));await fixture(r,'stored');const first=await A.scan();assert.equal((await A.changes({package:'metadata-only'})).events[0].change,'metadata-only');
   await new Promise(resolve=>setTimeout(resolve,5));const mp=path.join(r,'stored/package.json'),m=JSON.parse(await fs.readFile(mp,'utf8'));m.versions['1.0.0'].description='metadata changed, same tgz';await fs.writeFile(mp,JSON.stringify(m));const second=await A.scan();assert.equal(first.artifact_root,second.artifact_root);
   const hit=await A.changes({package:'stored',version:'1.0.0',from_time:second.ended_at,to_time:second.ended_at});assert.equal(hit.total,1);assert.equal(hit.events[0].change,'metadata-changed');assert.equal(hit.events[0].sequence,second.sequence);
+});
+test('choosing-stage and ticket-stage process death cannot block recovery',async()=>{
+  for(const [hook,exit]of [['afterWriterChoosing',79],['afterWriterTicket',80]] as const){const r=await root();const code=`require(${JSON.stringify(require.resolve('tsx/cjs'))});const {MirrorRepository}=require(${JSON.stringify(path.resolve(__dirname,'../src/mirror-core.ts'))});new MirrorRepository(${JSON.stringify(r)},{hooks:{${hook}:async()=>process.exit(${exit})}}).scan().catch(()=>process.exit(1));`;const child=spawn(process.execPath,['-e',code],{stdio:'ignore'});assert.equal(await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);}),exit);assert.equal((await new MirrorRepository(r).scan()).complete,true);}
+});
+test('same PID with a different start/boot identity is stale; actual holders and unknown namespaces are protected',async()=>{
+  const r=await root(),A=new MirrorRepository(r);await A.init();const self=await getWriterIdentity(),writers=path.join(A.state,'writers');
+  for(const state of ['choosing','ticket'])for(const altered of [{start_time:self.start_time==='0'?'1':'0'},{boot_id:'00000000-0000-0000-0000-000000000000'}]){const p=path.join(writers,'owner-'+process.pid+'-'+randomUUID());await fs.symlink(JSON.stringify({...self,...altered,state,number:'1'}),p);assert.equal((await A.scan()).complete,true);await fs.unlink(p);}
+  const live=path.join(writers,'owner-'+process.pid+'-'+randomUUID());await fs.symlink(JSON.stringify({...self,state:'choosing'}),live);await assert.rejects(A.scan(),/already running/);await fs.unlink(live);
+  const foreign=path.join(writers,'owner-'+process.pid+'-'+randomUUID());await fs.symlink(JSON.stringify({...self,pid_namespace:'pid:[0]',state:'choosing'}),foreign);await assert.rejects(A.scan(),/another PID namespace/);await fs.unlink(foreign);
+  await fs.symlink(JSON.stringify({...self,start_time:'0',token:randomUUID()}),path.join(A.state,'writer.lock'));assert.equal((await A.scan()).complete,true);
+});
+test('exports condition ordering remains observable even when tgz bytes do not change',async()=>{
+  const r=await root(),A=new MirrorRepository(r);await fixture(r);const p=path.join(r,'demo/package.json'),m=JSON.parse(await fs.readFile(p,'utf8'));m.versions['1.0.0'].exports={import:'./esm.js',default:'./fallback.js'};await fs.writeFile(p,JSON.stringify(m));const first=await A.scan();m.versions['1.0.0'].exports={default:'./fallback.js',import:'./esm.js'};await fs.writeFile(p,JSON.stringify(m));const next=await A.scan();assert.equal(first.artifact_root,next.artifact_root);assert.notEqual(first.root,next.root);assert.equal((await A.changes({package:'demo'})).events[1].change,'metadata-changed');
 });
