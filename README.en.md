@@ -1,3 +1,5 @@
+> Mirror sync v2 adds complete inventories, artifact reconciliation, verified receipts and saved package/version history. Legacy mtime baselines are untrusted and v1 archives require preflight validation. See [migration](docs/mirror-v2-migration.md) and [isolated validation](docs/mirror-v2-validation.md).
+
 # Verdaccio Offline Sync
 
 English | [中文](./README.md)

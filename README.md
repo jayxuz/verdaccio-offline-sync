@@ -1,3 +1,5 @@
+> 双向镜像同步 v2 已加入：完整库存、差异制品、回执基线和包版本历史查询。旧 mtime 历史不再可信，v1 导入强制预检。迁移步骤见 [协议与迁移](docs/mirror-v2-migration.md)，验收范围见 [隔离验证](docs/mirror-v2-validation.md)。
+
 # Verdaccio Offline Sync
 
 [English](./README.en.md) | 中文
