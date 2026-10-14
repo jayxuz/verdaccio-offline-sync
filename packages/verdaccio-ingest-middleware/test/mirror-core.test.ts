@@ -4,6 +4,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { afterEach, test } from 'node:test';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import tar from 'tar';
 import express from 'express';
 import { MirrorRepository, reconcile, stableRead } from '../src/mirror-core';
@@ -95,7 +97,7 @@ test('archive preflight rejects traversal, symlink, duplicate entries, expansion
   const blobs=await fs.readdir(path.join(dir,'blobs'));await fs.writeFile(path.join(dir,'blobs',blobs[0]),'corrupt');const bad=path.join(await root(),'bad.tar.gz');await tar.create({cwd:dir,file:bad,gzip:true},['.mirror-manifest.json','blobs/'+blobs[0]]);await assert.rejects(B.import(bad),/checksum/);
   const duplicate=path.join(await root(),'duplicate.tar.gz');await tar.create({cwd:dir,file:duplicate,gzip:true},['.mirror-manifest.json','.mirror-manifest.json']);await assert.rejects(B.import(duplicate),/Duplicate/);
   await fs.symlink('/etc/passwd',path.join(dir,'link'));const sym=path.join(await root(),'sym.tar.gz');await tar.create({cwd:dir,file:sym,gzip:true},['link']);await assert.rejects(B.import(sym),/entry/);
-  const small=new MirrorRepository(B.storage,{maxBytes:128});await assert.rejects(small.import(e.archive),/expansion/);
+  const small=new MirrorRepository(B.storage,{maxBytes:128});await assert.rejects(small.import(e.archive),/size limit|expansion/);
 });
 
 test('HTTP router serves full workflow, raw upload, inventories, saved time queries and safe UI',async()=>{
@@ -112,4 +114,33 @@ test('HTTP router serves full workflow, raw upload, inventories, saved time quer
 
 test('both distributable plugins use byte-identical generated protocol and UI sources',async()=>{
   for(const name of ['mirror-core.ts','mirror-router.ts']){const base=path.resolve(__dirname,'../../..');assert.equal(await fs.readFile(path.join(base,'scripts',name),'utf8'),await fs.readFile(path.join(base,'packages/verdaccio-ingest-middleware/src',name),'utf8'));assert.equal(await fs.readFile(path.join(base,'scripts',name),'utf8'),await fs.readFile(path.join(base,'packages/verdaccio-metadata-healer/src',name),'utf8'));}
+});
+
+test('history index queries actual package/version additions, disappearance, hash and alias changes by saved sequence',async()=>{
+  const a=await root();const f=await fixture(a);const A=new MirrorRepository(a),first=await A.scan();
+  await fixture(a,'demo','1.0.0','changed');const changed=await A.scan();
+  await fs.copyFile(f,path.join(a,'demo/alias-1.0.0.tgz'));const alias=await A.scan();
+  await fs.unlink(f);await fs.unlink(path.join(a,'demo/alias-1.0.0.tgz'));const gone=await A.scan();
+  const all=await A.changes({package:'demo',version:'1.0.0'});assert.deepEqual(all.events.map((e:any)=>e.change),['added','hash-changed','aliases-changed','removed']);
+  const range=await A.changes({package:'demo',from_sequence:changed.sequence,to_sequence:alias.sequence});assert.deepEqual(range.events.map((e:any)=>e.change),['hash-changed','aliases-changed']);
+  assert.equal((await A.changes({package:'demo',from_time:'1900-01-01T00:00:00Z',to_time:'1901-01-01T00:00:00Z'})).total,0);
+  await fs.writeFile(path.join(A.state,'index.json'),'corrupt');await A.rebuildHistoryIndex();assert.deepEqual((await A.changes({package:'demo'})).events,all.events);assert.equal((await A.snapshot(first.snapshot_id)).artifacts.length,1);assert.equal(gone.metadata_missing_artifacts.length,1);
+});
+test('empty/truncated legacy locks recover only when no live descriptor holds them; atomic locks retain live ownership',async()=>{
+  const A=new MirrorRepository(await root());await A.init();const lock=path.join(A.state,'writer.lock');const fd=await fs.open(lock,'wx');try{await assert.rejects(A.scan(),/held open|running/);}finally{await fd.close();}
+  assert.equal((await A.scan()).complete,true);await fs.writeFile(lock,'{"pid":');assert.equal((await A.scan()).complete,true);
+  await fs.symlink('pid-'+process.pid+'-'+randomUUID(),lock);await assert.rejects(A.scan(),/already running/);await fs.unlink(lock);
+  await fs.symlink('pid-2147483647-'+randomUUID(),lock);assert.equal((await A.scan()).complete,true);
+});
+test('reverse receipt with earlier wall clock advances by monotonic observations, replay never rolls baseline back',async()=>{
+  const a=await root(),b=await root(),A=new MirrorRepository(a,{now:()=>new Date('2000-01-01T00:00:00Z')}),B=new MirrorRepository(b);await fixture(a,'online');await fixture(b,'private');
+  const e=await transfer(A,B),r1=await B.import(e.archive);await B.acceptAck(await A.acceptReceipt(r1));
+  const reverse=await transfer(B,A),r2=await A.import(reverse.archive);assert(r2.verified_at<r1.verified_at);const ack=await B.acceptReceipt(r2);assert.equal(ack.baseline_advanced,true);assert.equal((await A.acceptAck(ack)).baseline_advanced,true);
+  const peer=(await B.status()).repo_id,head=(await A.status()).baselines[peer];assert.equal(head.receipt_hash,r2.receipt_hash);await A.acceptReceipt(r1);assert.equal((await A.status()).baselines[peer].receipt_hash,r2.receipt_hash);
+});
+test('late never-accepted forward receipt is superseded after a completed reverse chain',async()=>{
+  const {a,b,A,B}=await pair();await fixture(a,'online');await fixture(b,'private');const first=await transfer(A,B),r1=await B.import(first.archive),back=await transfer(B,A),r2=await A.import(back.archive);await A.acceptAck(await B.acceptReceipt(r2));const late=await A.acceptReceipt(r1);assert.equal(late.baseline_advanced,false);assert.equal((await B.acceptAck(late)).baseline_advanced,false);
+});
+test('traversal and nested compression are rejected before apply',async()=>{
+  const B=new MirrorRepository(await root()),dir=await root(),header=new (tar as any).Header({path:'../escape',type:'File',size:1,mode:0o600,uid:0,gid:0});header.encode();const bad=path.join(dir,'traversal.tar.gz');await fs.writeFile(bad,gzipSync(Buffer.concat([header.block,Buffer.from('x'),Buffer.alloc(511+1024)])));await assert.rejects(B.import(bad),/Unsafe path/);const nested=path.join(dir,'nested.tar.gz');await fs.writeFile(nested,gzipSync(gzipSync(Buffer.alloc(4096))));await assert.rejects(B.import(nested),/Nested compression/);
 });

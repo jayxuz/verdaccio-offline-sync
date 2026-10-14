@@ -1,4 +1,4 @@
-import { stableRead } from './mirror-core';
+import { stableRead, legacyPublicMetadata } from './mirror-core';
 import { createReadStream, createWriteStream } from 'fs';
 import { mkdir, rm, copyFile, readFile, writeFile, stat } from 'fs/promises';
 import path from 'path';
@@ -83,12 +83,16 @@ export class DifferentialPacker {
             if (safe.startsWith('/') || safe.includes('\\') || safe.split('/').some(p => !p || p === '.' || p === '..')) throw new Error('Unsafe export path');
             const staged = path.join(tempDir, safe);
             const current = await stat(file.absolutePath);
-            if (current.size !== file.size || current.mtimeMs !== file.mtime.getTime()) throw new Error('Source changed after scan');
-            const observed = await stableRead(file.absolutePath, staged);
+            if (current.size !== file.size || current.mtime.getTime() !== file.mtime.getTime()) throw new Error('Source changed after scan');
+            let observed = await stableRead(file.absolutePath, staged);
+            if (file.type === 'metadata') {
+              await writeFile(staged, JSON.stringify(legacyPublicMetadata(JSON.parse(await readFile(staged, 'utf8')), file.packageName)));
+              observed = await stableRead(staged);
+            }
             const checksum = observed.sha256;
             filesWithChecksum[index] = {
               path: file.relativePath,
-              size: file.size,
+              size: observed.size,
               mtime: file.mtime.toISOString(),
               checksum,
               type: file.type,
@@ -118,7 +122,7 @@ export class DifferentialPacker {
       // 计算统计信息
       const packages = new Set(files.map(f => f.packageName));
       const versions = files.filter(f => f.type === 'tarball').length;
-      const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+      const totalSize = filesWithChecksum.reduce((sum, f) => sum + f.size, 0);
 
       // 创建清单文件
       const manifest: ExportManifest = {

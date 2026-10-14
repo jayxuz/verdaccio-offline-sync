@@ -46,7 +46,8 @@ export default class ImportMiddleware extends pluginUtils.Plugin<HealerConfig> {
     this.importHandler = new ImportHandler(
       this.storagePath,
       this.logger,
-      importedPackageRefresher.refresh.bind(importedPackageRefresher)
+      importedPackageRefresher.refresh.bind(importedPackageRefresher),
+      (this.config as any).mirrorRegistryURL || ((this.config as any).host ? 'http://' + (this.config as any).host : undefined)
     );
 
     // 配置文件上传

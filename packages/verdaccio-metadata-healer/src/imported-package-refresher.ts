@@ -1,3 +1,4 @@
+import { persistVerdaccioMetadata } from './mirror-core';
 import { readFile } from 'fs/promises';
 import path from 'path';
 import { Logger, Manifest } from '@verdaccio/types';
@@ -143,23 +144,7 @@ export class ImportedPackageRefresher {
   }
 
   private async persistManifest(packageName: string, manifest: Manifest): Promise<void> {
-    const localStorage = this.verdaccioStorage?.localStorage;
-    const getPackageStorage = localStorage?._getLocalStorage;
-    const packageStorage = typeof getPackageStorage === 'function'
-      ? getPackageStorage.call(localStorage, packageName)
-      : undefined;
-
-    if (!packageStorage || typeof packageStorage.upsertPackage !== 'function') {
-      throw new Error(`Package storage for ${packageName} does not support upsertPackage`);
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      packageStorage.upsertPackage(
-        packageName,
-        manifest,
-        (error?: Error | null) => error ? reject(error) : resolve()
-      );
-    });
+    await persistVerdaccioMetadata(this.verdaccioStorage, packageName, manifest);
   }
 
   private async registerPackage(packageName: string): Promise<void> {

@@ -1,4 +1,4 @@
-import { extractLegacyArchive, mergeLegacyMetadata, safeLegacyDestination, stableRead } from './mirror-core';
+import { extractLegacyArchive, mergeLegacyMetadata, safeLegacyDestination, stableRead, finalizeLegacyMetadata, restoreLegacyTags, preflightLegacyConflicts } from './mirror-core';
 import { createReadStream } from 'fs';
 import { mkdir, rm, copyFile, readFile, writeFile, access } from 'fs/promises';
 import path from 'path';
@@ -30,7 +30,8 @@ export class ImportHandler {
   constructor(
     storagePath: string,
     logger: Logger,
-    rebuildImportedMetadata?: ImportMetadataRebuilder
+    rebuildImportedMetadata?: ImportMetadataRebuilder,
+    private registryURL?: string
   ) {
     this.storagePath = storagePath;
     this.logger = logger;
@@ -155,6 +156,8 @@ export class ImportHandler {
 
       if (errors.length) throw new Error('Checksum validation failed: ' + errors.join('; '));
 
+      await preflightLegacyConflicts(this.storagePath, manifest);
+
       // Check all existing artifacts for conflicts before any file is published.
       const preservedTags = new Map<string, any>();
       for (const file of manifest.files) {
@@ -250,8 +253,11 @@ export class ImportHandler {
         }
       }
 
+      await finalizeLegacyMetadata(this.storagePath, Array.from(packages), this.registryURL);
+
       // 阶段 5: 重建元数据（可选）
       let metadataRebuilt = false;
+      try {
       if (rebuildMetadata && packages.size > 0) {
         if (onProgress) {
           onProgress({
@@ -307,12 +313,9 @@ export class ImportHandler {
         }
       }
 
-      // A rebuild must not move existing user/private dist-tags.
-      for (const [name, tags] of preservedTags) {
-        const mp = await safeLegacyDestination(this.storagePath, name + '/package.json');
-        const current = JSON.parse(await readFile(mp, 'utf8'));
-        current['dist-tags'] = { ...current['dist-tags'], ...tags };
-        await writeFile(mp, JSON.stringify(current, null, 2));
+      await finalizeLegacyMetadata(this.storagePath, Array.from(packages), this.registryURL);
+      } finally {
+        for (const [name, tags] of preservedTags) await restoreLegacyTags(this.storagePath, name, tags);
       }
 
       // 完成

@@ -380,6 +380,15 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
     }
 
 
+
+
+
+
+
+
+
+
+
     app.use(mirrorRouter(this.storagePath, '/_/healer/mirror', { registryURL: (this.config as any).mirrorRegistryURL || ((this.config as any).host ? 'http://' + (this.config as any).host : undefined) }, storage));
 
     this.importedPackageRefresher = new ImportedPackageRefresher(
@@ -395,7 +404,8 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
         // 导入可能覆盖已有 tarball，先清除 filter 自身的扫描与哈希缓存。
         this.clearCache();
         await this.importedPackageRefresher.refresh(packageNames, onProgress);
-      }
+      },
+      (config as any).mirrorRegistryURL || (config.host ? 'http://' + config.host : undefined)
     );
 
     // 配置文件上传
