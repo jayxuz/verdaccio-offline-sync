@@ -405,7 +405,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
       async (packageNames, onProgress) => {
         // 导入可能覆盖已有 tarball，先清除 filter 自身的扫描与哈希缓存。
         this.clearCache();
-        await this.importedPackageRefresher.refresh(packageNames, onProgress);
+        await this.importedPackageRefresher.refresh(packageNames, onProgress, true);
       },
       (config as any).mirrorRegistryURL || (config.host ? 'http://' + config.host : undefined)
     );

@@ -62,7 +62,8 @@ export class MetadataPatcher {
         );
 
         // 添加到 manifest
-        patchedManifest.versions[tarball.version] = version;
+        const existing = patchedManifest.versions[tarball.version] || {};
+        patchedManifest.versions[tarball.version] = { ...version, ...existing, name: version.name, version: version.version, dist: version.dist, hasInstallScript: (version as any).hasInstallScript } as Version;
 
         // 更新 _attachments
         patchedManifest._attachments[tarball.filename] = {

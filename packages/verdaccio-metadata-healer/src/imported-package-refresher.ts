@@ -42,7 +42,8 @@ export class ImportedPackageRefresher {
 
   async refresh(
     packageNames: string[],
-    onProgress?: ImportRebuildProgressCallback
+    onProgress?: ImportRebuildProgressCallback,
+    repairExisting: boolean = false
   ): Promise<void> {
     const uniqueNames = Array.from(new Set(packageNames));
     const total = uniqueNames.length;
@@ -63,7 +64,7 @@ export class ImportedPackageRefresher {
           }
 
           const packageName = uniqueNames[index];
-          await this.rebuildPackage(packageName);
+          await this.rebuildPackage(packageName, repairExisting);
           completed++;
           onProgress?.(completed, total, packageName);
         }
@@ -73,7 +74,7 @@ export class ImportedPackageRefresher {
     await Promise.all(workers);
   }
 
-  async rebuildPackage(packageName: string): Promise<PackageRebuildResult> {
+  async rebuildPackage(packageName: string, repairExisting: boolean = false): Promise<PackageRebuildResult> {
     this.scanner.clearCache(packageName);
     const tarballs = await this.scanner.scanPackageTarballs(packageName);
     if (tarballs.length === 0) {
@@ -98,8 +99,9 @@ export class ImportedPackageRefresher {
     } as Manifest;
     const existingVersions = new Set(Object.keys(manifest.versions || {}));
     const missingVersions = tarballs.filter(({ version }) => !existingVersions.has(version));
-    const rebuilt = missingVersions.length > 0
-      ? await this.patcher.patchManifest(manifest, missingVersions, this.shasumCache)
+    const repairVersions = repairExisting ? tarballs : missingVersions;
+    const rebuilt = repairVersions.length > 0
+      ? await this.patcher.patchManifest(manifest, repairVersions, this.shasumCache)
       : manifest;
     const healedVersions = missingVersions.filter(
       ({ version }) => Boolean(rebuilt.versions?.[version])
