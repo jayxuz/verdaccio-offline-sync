@@ -1,3 +1,4 @@
+import { mirrorRouter } from './mirror-router';
 import { Router, Express, Request, Response } from 'express';
 import { pluginUtils } from '@verdaccio/core';
 import { Config, Logger } from '@verdaccio/types';
@@ -65,6 +66,7 @@ export default class ImportMiddleware extends pluginUtils.Plugin<HealerConfig> {
       }
     });
 
+    app.use(mirrorRouter(this.storagePath, '/_/healer/mirror', { registryURL: (this.config as any).mirrorRegistryURL || ((this.config as any).host ? 'http://' + (this.config as any).host : undefined) }, storage));
     const router = Router();
 
     // 上传并导入差分包

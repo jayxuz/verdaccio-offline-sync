@@ -1,3 +1,4 @@
+import { mirrorRouter } from './mirror-router';
 import express, { Router, Express, Request, Response } from 'express';
 import { pluginUtils } from '@verdaccio/core';
 import { Config, Logger, Manifest } from '@verdaccio/types';
@@ -377,6 +378,9 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
       this.logger.debug('Import UI is disabled');
       return;
     }
+
+
+    app.use(mirrorRouter(this.storagePath, '/_/healer/mirror', { registryURL: (this.config as any).mirrorRegistryURL || ((this.config as any).host ? 'http://' + (this.config as any).host : undefined) }, storage));
 
     this.importedPackageRefresher = new ImportedPackageRefresher(
       config,

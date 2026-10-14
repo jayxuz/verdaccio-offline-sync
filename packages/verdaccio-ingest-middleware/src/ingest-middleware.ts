@@ -1,3 +1,4 @@
+import { mirrorRouter } from './mirror-router';
 import { Router, Express, Request, Response, json } from 'express';
 import { pluginUtils } from '@verdaccio/core';
 import { Config, Logger } from '@verdaccio/types';
@@ -147,6 +148,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     this.diffScanner = new DifferentialScanner(this.storagePath, this.logger, concurrency);
     this.diffPacker = new DifferentialPacker(this.storagePath, this.logger, concurrency);
 
+    app.use(mirrorRouter(this.storagePath, '/_/ingest/mirror', { registryURL: (this.config as any).mirrorRegistryURL || ((this.config as any).host ? 'http://' + (this.config as any).host : undefined) }, storage));
     const router = Router();
 
     // 添加 JSON body 解析中间件

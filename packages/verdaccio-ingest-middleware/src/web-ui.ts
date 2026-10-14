@@ -578,6 +578,7 @@ export function getWebUIHTML(config: any): string {
   </style>
 </head>
 <body>
+  <nav style="padding:12px;text-align:center;background:#e4efff"><a href="/_/ingest/mirror/ui">双向镜像同步 v2 · 清单 / 对账 / 反向导出 / 回执</a></nav>
   <div class="container">
     <header>
       <h1>🔄 ${title}</h1>
