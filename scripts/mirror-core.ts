@@ -559,8 +559,16 @@ export async function preflightLegacyConflicts(root:string,manifest:any):Promise
 export async function persistVerdaccioMetadata(storage:any,name:string,raw:any):Promise<void>{
   const local=storage?.localStorage,ps=typeof local?._getLocalStorage==='function'?local._getLocalStorage(name):undefined;
   if(typeof ps?.upsertPackage==='function')await new Promise<void>((resolve,reject)=>ps.upsertPackage(name,raw,(e:any)=>e?reject(e):resolve()));
-  else if(typeof local?._updatePackage==='function')await new Promise<void>((resolve,reject)=>local._updatePackage(name,(current:any,done:(e?:any)=>void)=>{
-    try{const merged={...current,...raw,versions:{...current.versions,...raw.versions},'dist-tags':{...raw['dist-tags'],...current['dist-tags']},_attachments:{...current._attachments,...raw._attachments},_distfiles:{...current._distfiles,...raw._distfiles},_uplinks:current._uplinks||{},_rev:current._rev,_id:current._id};Object.assign(current,merged);done();}catch(e){done(e);}
-  },(e:any)=>e?reject(e):resolve()));
+  else if(typeof local?._updatePackage==='function'){
+    const update=()=>new Promise<void>((resolve,reject)=>local._updatePackage(name,(current:any,done:(e?:any)=>void)=>{
+      try{const versions={...current.versions};for(const [v,value]of Object.entries(raw.versions||{}) as [string,any][])versions[v]={...value,...versions[v],dist:value.dist||versions[v]?.dist,...(value.hasInstallScript!==undefined?{hasInstallScript:value.hasInstallScript}:{})};const merged={...current,...raw,versions,'dist-tags':{...raw['dist-tags'],...current['dist-tags']},time:{...current.time,...raw.time},_attachments:{...current._attachments,...raw._attachments},_distfiles:{...current._distfiles,...raw._distfiles},_uplinks:current._uplinks||{},_rev:current._rev,_id:current._id};Object.assign(current,merged);done();}catch(e){done(e);}
+    },(e:any)=>e?reject(e):resolve()));
+    try{await update();}catch(e:any){
+      if(![404,'ENOENT'].includes(e.code)&&e.status!==404&&e.statusCode!==404)throw e;
+      if(typeof ps?.createPackage!=='function')throw new Error(`Package storage for ${name} cannot create a missing package safely`);
+      const initial={_rev:'0-0000000000000000',_id:name,_uplinks:{},_attachments:{},_distfiles:{},time:{},...raw};
+      try{await new Promise<void>((resolve,reject)=>ps.createPackage(name,initial,(err:any)=>err?reject(err):resolve()));}catch(createError:any){if(![409,'EEXIST'].includes(createError.code)&&createError.status!==409&&createError.statusCode!==409)throw createError;await update();}
+    }
+  }
   else throw new Error(`Package storage for ${name} does not support upsertPackage or a known Verdaccio update adapter`);
 }

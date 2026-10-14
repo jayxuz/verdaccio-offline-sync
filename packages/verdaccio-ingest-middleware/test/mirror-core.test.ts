@@ -9,7 +9,7 @@ import { gzipSync } from 'node:zlib';
 import { spawn } from 'node:child_process';
 import tar from 'tar';
 import express from 'express';
-import { MirrorRepository, reconcile, stableRead, getWriterIdentity } from '../src/mirror-core';
+import { MirrorRepository, reconcile, stableRead, getWriterIdentity, persistVerdaccioMetadata } from '../src/mirror-core';
 import { mirrorRouter, mirrorHTML } from '../src/mirror-router';
 
 const roots:string[]=[];
@@ -186,3 +186,5 @@ test('same PID with a different start/boot identity is stale; actual holders and
 test('exports condition ordering remains observable even when tgz bytes do not change',async()=>{
   const r=await root(),A=new MirrorRepository(r);await fixture(r);const p=path.join(r,'demo/package.json'),m=JSON.parse(await fs.readFile(p,'utf8'));m.versions['1.0.0'].exports={import:'./esm.js',default:'./fallback.js'};await fs.writeFile(p,JSON.stringify(m));const first=await A.scan();m.versions['1.0.0'].exports={default:'./fallback.js',import:'./esm.js'};await fs.writeFile(p,JSON.stringify(m));const next=await A.scan();assert.equal(first.artifact_root,next.artifact_root);assert.notEqual(first.root,next.root);assert.equal((await A.changes({package:'demo'})).events[1].change,'metadata-changed');
 });
+test('standard storage creates missing metadata without direct filesystem fallback',async()=>{let created:any;const storage={localStorage:{_getLocalStorage:()=>({createPackage(_name:string,data:any,cb:(e?:any)=>void){created=data;cb();}}),_updatePackage(_name:string,_update:any,cb:(e?:any)=>void){cb({code:404});}}};await persistVerdaccioMetadata(storage,'demo',{name:'demo',versions:{'1.0.0':{name:'demo',version:'1.0.0'}},'dist-tags':{latest:'1.0.0'}});assert(created.versions['1.0.0']);assert.deepEqual(created._uplinks,{});assert.equal(created._id,'demo');});
+test('standard create race retries locked update, retaining current private version fields and tags',async()=>{let calls=0;const current:any={name:'demo',_rev:'target-rev',versions:{'1.0.0':{name:'demo',version:'1.0.0',privateNote:'retain'},'2.0.0':{name:'demo',version:'2.0.0'}},'dist-tags':{latest:'2.0.0'},time:{'2.0.0':'known-time'},_uplinks:{target:true}};const storage={localStorage:{_getLocalStorage:()=>({createPackage(_n:string,_d:any,cb:(e?:any)=>void){cb({code:'EEXIST'});}}),_updatePackage(_n:string,update:any,cb:(e?:any)=>void){if(!calls++){cb({code:'ENOENT'});return;}update(current,cb);}}};await persistVerdaccioMetadata(storage,'demo',{name:'demo',versions:{'1.0.0':{name:'demo',version:'1.0.0',type:'module',dist:{shasum:'actual'}}},'dist-tags':{latest:'1.0.0'},time:{modified:'local-change'}});assert.equal(calls,2);assert.equal(current.versions['1.0.0'].privateNote,'retain');assert.equal(current.versions['1.0.0'].type,'module');assert(current.versions['2.0.0']);assert.equal(current['dist-tags'].latest,'2.0.0');assert.equal(current.time['2.0.0'],'known-time');assert.equal(current._rev,'target-rev');});
