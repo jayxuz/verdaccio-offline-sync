@@ -110,7 +110,9 @@ function publicMetadata(raw: any, name: string): any {
   }
   const tags: any = Object.create(null);
   for(const [tag,v] of Object.entries(raw['dist-tags'] || {})) if(typeof v === 'string' && versions[v]) tags[tag] = v;
-  return { name, versions, 'dist-tags': tags };
+  const time: any = Object.create(null);
+  for (const [key, value] of Object.entries(raw.time || {})) if ((key === 'created' || key === 'modified' || versions[key]) && typeof value === 'string' && Number.isFinite(Date.parse(value))) time[key] = value;
+  return { name, versions, 'dist-tags': tags, ...(Object.keys(time).length ? { time } : {}) };
 }
 async function tarballIdentity(file:string,artifact:Artifact,maxBytes:number):Promise<void>{
   let found:any, count=0;
@@ -421,7 +423,7 @@ export class MirrorRepository {
       for(const rel of aliasMetadata)if(!existing&&await exists(path.join(this.storage,rel)))existing=await this.sourcePath(rel);
       const raw=existing?await json(existing):{name,versions:{},'dist-tags':{},_attachments:{},_distfiles:{},_uplinks:{},_rev:'0-0000000000000000',time:{}};
       const original=stable(raw); publicMetadata(raw,name);
-      raw.versions={...raw.versions};raw['dist-tags']={...(incoming['dist-tags']||{}),...(raw['dist-tags']||{})};raw._attachments={...(raw._attachments||{})};raw._distfiles={...(raw._distfiles||{})};
+      raw.time={...(incoming.time||{}),...(raw.time||{})};raw.versions={...raw.versions};raw['dist-tags']={...(incoming['dist-tags']||{}),...(raw['dist-tags']||{})};raw._attachments={...(raw._attachments||{})};raw._distfiles={...(raw._distfiles||{})};
       for(const a of all.filter(a=>a.package===name)){
         const sourceVersion=t.source.metadata[name]?.versions?.[a.version]||t.target.metadata[name]?.versions?.[a.version];
         let v=raw.versions[a.version]||sourceVersion;if(!v)throw new Error(`Metadata missing for artifact ${key(a)}`);
@@ -524,6 +526,7 @@ export async function mergeLegacyMetadata(source:string,dest:string,name:string)
   publicMetadata(local,name);
   local.versions={...incoming.versions,...local.versions};
   local['dist-tags']={...incoming['dist-tags'],...local['dist-tags']};
+  local.time={...incoming.time,...local.time};
   await atomic(dest,local);
 }
 

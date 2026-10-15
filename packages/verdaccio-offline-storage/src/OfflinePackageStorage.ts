@@ -262,7 +262,7 @@ export class OfflinePackageStorage extends LocalFS {
       name,
       (local: Manifest, updateCallback: Callback) => {
         try {
-          const merged = mergeLocalManifests(local, incoming);
+          const merged = mergeLocalManifests(local, incoming, this.config.metadataPolicy === 'preserve');
           Object.assign(local, merged);
           for (const field of ['_rev', '_id'] as const) {
             if (!Object.prototype.hasOwnProperty.call(merged, field)) {
@@ -618,7 +618,10 @@ export class OfflinePackageStorage extends LocalFS {
         }
 
         // 离线模式下，将 dist-tags.latest 对齐到本地可用的最高版本
-        if (offline && versionsToProcess.length > 0) {
+        if (offline && this.config.metadataPolicy === 'preserve') {
+          const available = new Set(versionsToProcess);
+          data['dist-tags'] = Object.fromEntries(Object.entries(data['dist-tags'] || {}).filter(([, version]) => typeof version === 'string' && available.has(version)));
+        } else if (offline && versionsToProcess.length > 0) {
           const sortedVersions = versionsToProcess
             .filter((v) => semver.valid(v))
             .sort((a, b) => semver.compare(b, a));

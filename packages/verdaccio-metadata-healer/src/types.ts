@@ -5,6 +5,8 @@ import { Manifest, Version, Dist } from '@verdaccio/types';
  */
 export interface HealerConfig {
   enabled: boolean;
+  /** Match offline-storage policy; preserve never invents tags or publication times. */
+  metadataPolicy?: 'local-latest' | 'preserve';
   storagePath?: string;
   scanCacheTTL?: number;
   shasumCacheSize?: number;

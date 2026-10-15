@@ -199,3 +199,19 @@ test('verified replay repairs missing metadata, retains target fields, and rejec
   fixed.versions['1.0.0'].description='changed local meaning';await fs.writeFile(dest,JSON.stringify(fixed));await assert.rejects(B.import(e.archive),/metadata changed/);assert.deepEqual((await B.status()).baselines,{});
   await fixture(b,'added-after-receipt');await assert.rejects(B.import(e.archive),/artifacts changed/);assert.deepEqual((await B.status()).baselines,{});
 });
+
+
+test('sidecar tags and publication times survive additive and zero-artifact imports', async () => {
+  const {a,b,A,B}=await pair();
+  await fixture(a,'demo','2.0.0'); await fixture(b,'demo','1.0.0');
+  const source=path.join(a,'demo/package.json'),target=path.join(b,'demo/package.json');
+  const incoming=JSON.parse(await fs.readFile(source,'utf8')),local=JSON.parse(await fs.readFile(target,'utf8'));
+  incoming['dist-tags']={latest:'2.0.0',next:'2.0.0'};incoming.time={'2.0.0':'2021-01-01T00:00:00Z',created:'2021-01-01T00:00:00Z'};
+  local['dist-tags']={latest:'1.0.0',private:'1.0.0'};local.time={'1.0.0':'2020-01-01T00:00:00Z',created:'2020-01-01T00:00:00Z'};
+  await fs.writeFile(source,JSON.stringify(incoming));await fs.writeFile(target,JSON.stringify(local));
+  const first=await transfer(A,B);await B.import(first.archive);
+  const expectedTags={latest:'1.0.0',private:'1.0.0',next:'2.0.0'},expectedTime={...incoming.time,...local.time};
+  let actual=JSON.parse(await fs.readFile(target,'utf8'));assert.deepEqual(actual['dist-tags'],expectedTags);assert.deepEqual(actual.time,expectedTime);
+  const second=await transfer(A,B);assert.equal(second.files,0);await B.import(second.archive);
+  actual=JSON.parse(await fs.readFile(target,'utf8'));assert.deepEqual(actual['dist-tags'],expectedTags);assert.deepEqual(actual.time,expectedTime);
+});

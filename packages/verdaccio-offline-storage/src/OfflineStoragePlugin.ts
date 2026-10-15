@@ -39,6 +39,11 @@ export default class OfflineStoragePlugin extends LocalDatabase {
   protected data: { list: string[] };
 
   constructor(config: OfflineStorageConfig, options: PluginOptions) {
+    if (config.metadataPolicy && !['preserve', 'local-latest'].includes(config.metadataPolicy)) throw new Error('Unknown metadataPolicy');
+    if (config.metadataPolicy === 'preserve') {
+      const middleware = Object.entries((options.config as any).middlewares || {}).find(([name]) => name.endsWith('metadata-healer'))?.[1] as any;
+      if (config.offline !== true || middleware?.metadataPolicy !== 'preserve') throw new Error('metadataPolicy preserve requires offline: true and middlewares.metadata-healer.metadataPolicy: preserve');
+    }
     super(config, options.logger);
     this.config = config;
     this.logger = options.logger;
@@ -131,8 +136,16 @@ export default class OfflineStoragePlugin extends LocalDatabase {
 
     return new OfflinePackageStorage(storagePath, this.logger, this.config) as unknown as pluginUtils.StorageHandler;
   }
+  getMetadataPolicy(): string { return this.config.metadataPolicy || 'local-latest'; }
+  /** Read through the verified cache again after Verdaccio's own response normalization. */
+  async preserveResponseMetadata(name: string, result: any, abbreviated = false): Promise<any> {
+    const local: any = await new Promise((resolve, reject) => (this.getPackageStorage(name) as any).readPackage(name, (error: any, value: any) => error ? reject(error) : resolve(value)));
+    result['dist-tags'] = Object.fromEntries(Object.entries(local['dist-tags']).filter(([, version]) => typeof version === 'string' && result.versions?.[version]));
+    if (!abbreviated || Object.prototype.hasOwnProperty.call(result, 'time')) result.time = { ...local.time };
+    return result;
+  }
   rebuildReadCache(): Promise<any> { return this.readCache.rebuildPersistent(); }
-  getReadCacheMetrics(): any { return this.readCache.stats(); }
+  getReadCacheMetrics(): any { return { ...this.readCache.stats(), metadataPolicy: this.getMetadataPolicy() }; }
   warmReadCache(packages: string[], forceRehash = false): any { return this.readCache.startWarmup(packages, forceRehash); }
   async warmReadCacheFromLockfile(file: string, forceRehash = false): Promise<any> {
     return this.readCache.startWarmup(await selectLockfilePackages(file, this.config.readCache?.warmup?.maxPackages), forceRehash);

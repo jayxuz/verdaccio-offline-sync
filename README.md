@@ -710,6 +710,8 @@ curl -X POST http://external:4873/_/ingest/sync \
 
 可选 `readCache` 支持独立持久读取索引、指标和有界热点预热；默认只用内存缓存。配置和恢复步骤见 [读取缓存操作文档](docs/read-cache-operations.md)，实测收益及限制见 [自用服务器验收](docs/read-cache-validation-2026-10-15.md)。
 
+离线交付需要保留原始 dist-tags 与发布时间时，显式启用 `metadataPolicy: preserve`；存储插件和 healer middleware 必须同时配置，详见 [严格 metadata 保留模式](docs/strict-metadata-policy.md)。
+
 ### metadata-healer 配置项
 
 | 配置项 | 类型 | 默认值 | 说明 |

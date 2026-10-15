@@ -92,7 +92,7 @@ export class MetadataPatcher {
     }
 
     // 更新 modified 时间
-    patchedManifest.time.modified = new Date().toISOString();
+    if (this.config.metadataPolicy !== 'preserve') patchedManifest.time.modified = new Date().toISOString();
 
     return patchedManifest;
   }
@@ -171,6 +171,7 @@ export class MetadataPatcher {
    * 更新 dist-tags
    */
   updateDistTags(manifest: Manifest, availableVersions?: string[]): void {
+    if (this.config.metadataPolicy === 'preserve') return;
     const manifestVersions = new Set(Object.keys(manifest.versions || {}));
     const versions = (availableVersions || Array.from(manifestVersions))
       .filter((version) => manifestVersions.has(version));

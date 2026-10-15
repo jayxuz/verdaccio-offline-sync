@@ -143,7 +143,7 @@ export class ReadCacheManager {
         const adapter = require('./OfflinePackageStorage').OfflinePackageStorage;
         const utilities = require('./manifest-utils'), versions = require('./tarball-version');
         const methods = (type: any): string => Object.getOwnPropertyNames(type.prototype).sort().filter(n => n !== 'constructor' && typeof type.prototype[n] === 'function').map(n => n + ':' + type.prototype[n].toString()).join('\n');
-        const code = digest([methods(ReadCacheManager), methods(adapter), Object.getPrototypeOf(adapter.prototype).readPackage.toString(), utilities.normalizeLocalManifest.toString(), versions.extractTarballVersion.toString(), fileIdentity.toString(), process.version, require('semver/package.json').version].join('\n'));
+        const code = digest([methods(ReadCacheManager), methods(adapter), methods(require('./OfflineStoragePlugin').default), Object.getPrototypeOf(adapter.prototype).readPackage.toString(), utilities.normalizeLocalManifest.toString(), utilities.mergeLocalManifests.toString(), versions.extractTarballVersion.toString(), fileIdentity.toString(), process.version, require('semver/package.json').version].join('\n'));
         return [boot.trim(), pid, mount, code].join(':');
       } catch { return undefined; }
     })();
@@ -169,7 +169,7 @@ export class ReadCacheManager {
 
   mode(config: OfflineStorageConfig, name: string): unknown[] {
     const proxy = typeof config.getMatchedPackagesSpec === 'function' ? config.getMatchedPackagesSpec(name)?.proxy : undefined;
-    return [config.offline, proxy, config.verifyChecksum, config.minTarballSize, typeof config.getMatchedPackagesSpec === 'function'];
+    return [config.offline, proxy, config.verifyChecksum, config.minTarballSize, config.metadataPolicy || 'local-latest', typeof config.getMatchedPackagesSpec === 'function'];
   }
   private logical(directory: string, name: string, mode: unknown[]): string { return JSON.stringify([path.resolve(directory), name, mode]); }
   private key(namespace: string, logical: string, signature: string, kind: string): string { return digest(JSON.stringify([namespace, logical, signature, kind])); }
@@ -488,7 +488,7 @@ export class ReadCacheManager {
     if (!names.length || names.length > max || names.some(n => !NAME.test(n) || n.split('/').some(p => p.startsWith('.')))) throw new Error('Explicit valid hotspot package list required (within maxPackages)');
     const hasMatcher = typeof this.config.getMatchedPackagesSpec === 'function';
     const proxy = Object.fromEntries(names.map(n => [n, hasMatcher ? this.config.getMatchedPackagesSpec(n)?.proxy : undefined]));
-    const config = { storage: this.root, offline: this.config.offline, verifyChecksum: this.config.verifyChecksum, minTarballSize: this.config.minTarballSize, readCache: this.options };
+    const config = { storage: this.root, offline: this.config.offline, metadataPolicy: this.config.metadataPolicy, verifyChecksum: this.config.verifyChecksum, minTarballSize: this.config.minTarballSize, readCache: this.options };
     let workerFile = path.join(__dirname, 'read-cache-worker.js');
     // Source tests may load TS; packaged runtime always uses build/read-cache-worker.js.
     try { require.resolve(workerFile); } catch { workerFile = path.join(__dirname, '../build/read-cache-worker.js'); }
@@ -572,7 +572,7 @@ export class ReadCacheManager {
 
 const managers = new Map<string, ReadCacheManager>();
 export function getReadCacheManager(config: OfflineStorageConfig, root: string): ReadCacheManager {
-  const key = JSON.stringify([path.resolve(root), config.readCache || {}]);
+  const key = JSON.stringify([path.resolve(root), config.readCache || {}, config.metadataPolicy || 'local-latest', config.offline, config.verifyChecksum, config.minTarballSize]);
   let manager = managers.get(key);
   if (!manager) { manager = new ReadCacheManager(root, config); managers.set(key, manager); }
   return manager;

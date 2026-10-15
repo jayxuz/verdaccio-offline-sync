@@ -109,7 +109,7 @@ export class ImportedPackageRefresher {
 
     this.patcher.updateDistTags(rebuilt, tarballs.map(({ version }) => version));
     rebuilt.time = rebuilt.time || {};
-    rebuilt.time.modified = new Date().toISOString();
+    if (this.config.metadataPolicy !== 'preserve') rebuilt.time.modified = new Date().toISOString();
 
     await this.persistManifest(packageName, rebuilt);
     await this.registerPackage(packageName);

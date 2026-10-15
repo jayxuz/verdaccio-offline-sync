@@ -159,7 +159,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
 
       if (tarballs.length === 0) {
         // 即使没有本地 tarball，也尝试保存远端元数据
-        if (config.autoSaveMetadata !== false) {
+        if (config.metadataPolicy !== 'preserve' && config.autoSaveMetadata !== false) {
           this.saveMetadataAsync(packageName, manifest);
         }
         return manifest;
@@ -180,7 +180,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
         }
 
         // 自动保存元数据到本地
-        if (config.autoSaveMetadata !== false) {
+        if (config.metadataPolicy !== 'preserve' && config.autoSaveMetadata !== false) {
           this.saveMetadataAsync(packageName, manifest);
         }
 
@@ -205,7 +205,7 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
       }
 
       // 5. 自动保存修复后的元数据到本地
-      if (config.autoSaveMetadata !== false) {
+      if (config.metadataPolicy !== 'preserve' && config.autoSaveMetadata !== false) {
         this.saveMetadataAsync(packageName, patchedManifest);
       }
 
@@ -351,6 +351,22 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
    */
   register_middlewares(app: Express, auth: any, storage: any): void {
     const config = this.config as HealerConfig;
+
+    const plugin = storage?.localStorage?.storagePlugin;
+    const strict = plugin?.getMetadataPolicy?.() === 'preserve';
+    if (strict !== (config.metadataPolicy === 'preserve')) throw new Error('metadataPolicy preserve must match offline-storage and healer middleware');
+    if (strict && !storage[Symbol.for('offline-sync.preserve-response')]) {
+      if (typeof plugin.preserveResponseMetadata !== 'function' || typeof storage.getPackage !== 'function') throw new Error('Unsupported strict metadata response adapter');
+      const original = storage.getPackage;
+      storage.getPackage = function(options: any): any {
+        return original.call(this, { ...options, callback(error: any, result: any, ...rest: any[]) {
+          if (error) return options.callback(error, result, ...rest);
+          Promise.resolve().then(() => plugin.preserveResponseMetadata(options.name, result, options.abbreviated === true))
+            .then(value => options.callback(null, value, ...rest), failure => options.callback(failure));
+        } });
+      };
+      storage[Symbol.for('offline-sync.preserve-response')] = true;
+    }
 
     // 保存 Verdaccio 存储实例，用于后续保存元数据
     this.verdaccioStorage = storage;

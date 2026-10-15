@@ -44,7 +44,7 @@ function isValidLocalIdentity(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-export function mergeLocalManifests(local: Manifest, incoming: Manifest): Manifest {
+export function mergeLocalManifests(local: Manifest, incoming: Manifest, preserveMetadata = false): Manifest {
   if (!local || typeof local !== 'object' || Array.isArray(local)) {
     throw new TypeError('local manifest must be an object');
   }
@@ -80,6 +80,10 @@ export function mergeLocalManifests(local: Manifest, incoming: Manifest): Manife
       ...asMap(localManifest.versions),
       ...asMap(incomingManifest.versions)
     },
+    ...(preserveMetadata ? {
+      'dist-tags': { ...asMap(incomingManifest['dist-tags']), ...asMap(localManifest['dist-tags']) },
+      time: { ...asMap(incomingManifest.time), ...asMap(localManifest.time) }
+    } : {}),
     _attachments: {
       ...asMap(localManifest._attachments),
       ...asMap(incomingManifest._attachments)

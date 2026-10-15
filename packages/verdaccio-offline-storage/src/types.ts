@@ -6,6 +6,8 @@ import { Config, Logger } from '@verdaccio/types';
 export interface OfflineStorageConfig extends Config {
   /** Force offline mode for all packages */
   offline?: boolean;
+  /** preserve keeps authoritative tags/time; requires matching healer middleware. */
+  metadataPolicy?: 'local-latest' | 'preserve';
   readCache?: ReadCacheConfig;
   /** 校验本地 tarball SHA-1 是否与 metadata 一致（默认 true） */
   verifyChecksum?: boolean;
