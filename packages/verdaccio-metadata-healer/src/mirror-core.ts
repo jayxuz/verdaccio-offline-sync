@@ -378,7 +378,16 @@ export class MirrorRepository {
       const jp=path.join(this.state,'transfers',t.transfer_id+'.json');
       const prior:Journal|undefined=await exists(jp)?await json(jp):undefined;
       if(prior&&stable(prior.transfer)!==stable(t))throw new Error('transfer_id reused with different content');
-      if(prior?.receipt){await this.verifyExpected(t);return prior.receipt;}
+      if(prior?.receipt){
+        // A replay may repair lost metadata, but may never bless a changed artifact set.
+        const observed=await this.scanUnlocked();
+        if(!observed.complete||observed.artifact_root!==t.expected_artifact_root)throw new Error('Replay target artifacts changed; no receipt/baseline');
+        await this.mergeMetadata(t);
+        await this.options.onImported?.([...new Set([...t.target.artifacts,...t.files].map(a=>a.package))]);
+        const after=await this.verifyExpected(t);
+        if(after.root!==prior.receipt.target_root)throw new Error('Replay target metadata changed; exchange full inventories for a new receipt');
+        return prior.receipt;
+      }
       if(!prior){const before=await this.scanUnlocked();if(!before.complete||before.root!==t.base_root)throw new Error('Target chain changed; exchange full inventories and export again');}
       const observed=await this.scanUnlocked();if(!observed.complete)throw new Error('Incomplete target scan before apply');
       for(const a of t.files)if(observed.artifacts.some(b=>key(a)===key(b)&&a.sha256!==b.sha256)){
@@ -414,8 +423,10 @@ export class MirrorRepository {
       const original=stable(raw); publicMetadata(raw,name);
       raw.versions={...raw.versions};raw['dist-tags']={...(incoming['dist-tags']||{}),...(raw['dist-tags']||{})};raw._attachments={...(raw._attachments||{})};raw._distfiles={...(raw._distfiles||{})};
       for(const a of all.filter(a=>a.package===name)){
-        let v=raw.versions[a.version]||incoming.versions[a.version];if(!v)throw new Error(`Metadata missing for artifact ${key(a)}`);
-        v=JSON.parse(JSON.stringify(v));
+        const sourceVersion=t.source.metadata[name]?.versions?.[a.version]||t.target.metadata[name]?.versions?.[a.version];
+        let v=raw.versions[a.version]||sourceVersion;if(!v)throw new Error(`Metadata missing for artifact ${key(a)}`);
+        // Fill absent installation fields while preserving target-owned values and extras.
+        v=JSON.parse(JSON.stringify({...sourceVersion,...v}));
         const filename=path.posix.basename(a.aliases.find(p=>p===a.path)||a.aliases[0]||a.path);
         // New artifacts are always written to their canonical path; retained target artifacts keep their serving filename.
         const actual=t.files.some(f=>key(f)===key(a))?path.posix.basename(a.path):filename;
