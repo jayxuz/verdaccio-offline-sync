@@ -708,6 +708,8 @@ curl -X POST http://external:4873/_/ingest/sync \
 | `verifyChecksum` | boolean | true | 校验本地 tarball SHA-1 是否与 metadata 一致 |
 | `minTarballSize` | number | 128 | tarball 最小体积（字节），低于此值视为损坏 |
 
+可选 `readCache` 支持独立持久读取索引、指标和有界热点预热；默认只用内存缓存。配置和恢复步骤见 [读取缓存操作文档](docs/read-cache-operations.md)，实测收益及限制见 [自用服务器验收](docs/read-cache-validation-2026-10-15.md)。
+
 ### metadata-healer 配置项
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -812,3 +814,5 @@ curl -X POST http://external:4873/_/ingest/download \
 ## License
 
 MIT
+
+公开前的历史与交付资料脱敏边界见 [公开脱敏说明](docs/public-release-sanitization.md)。原始运行证据和旧历史不随公开交付包提供。
