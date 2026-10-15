@@ -148,6 +148,12 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     this.diffScanner = new DifferentialScanner(this.storagePath, this.logger, concurrency);
     this.diffPacker = new DifferentialPacker(this.storagePath, this.logger, concurrency);
 
+    // Reuse storage-plugin metrics; no cache implementation or mutating control is duplicated here.
+    app.get('/_/ingest/cache/performance', (_req: any, res: any) => {
+      const plugin = storage?.localStorage?.storagePlugin;
+      res.json(typeof plugin?.getReadCacheMetrics === 'function' ? plugin.getReadCacheMetrics() : { enabled: false, reason: 'Storage does not provide read-cache metrics' });
+    });
+
     app.use(mirrorRouter(this.storagePath, '/_/ingest/mirror', { registryURL: (this.config as any).mirrorRegistryURL || ((this.config as any).host ? 'http://' + (this.config as any).host : undefined) }, storage));
     const router = Router();
 

@@ -13,3 +13,6 @@ import { OfflineStorageConfig, PluginOptions } from './types';
 
 export default OfflineStoragePlugin;
 export { OfflineStoragePlugin, OfflinePackageStorage, OfflineStorageConfig, PluginOptions };
+
+export { getReadCacheManager, ReadCacheManager, selectLockfilePackages } from './read-cache';
+export type { ReadCacheConfig } from './types';

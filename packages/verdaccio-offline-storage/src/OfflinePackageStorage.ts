@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, createReadStream, watch, type FSWatcher } from 'fs';
+import { getReadCacheManager, ReadCacheManager } from './read-cache';
+import { existsSync, readdirSync, watch, type FSWatcher } from 'fs';
 import { readFile, readdir, stat } from 'fs/promises';
-import { createHash } from 'crypto';
 import { basename, dirname, join, resolve } from 'path';
 import semver from 'semver';
 import { Logger, Manifest, Callback } from '@verdaccio/types';
@@ -38,51 +38,16 @@ try {
  * This does NOT modify the original package.json file stored in the local-storage cache.
  */
 export class OfflinePackageStorage extends LocalFS {
-  // Shared across the short-lived package-storage adapters created by Verdaccio.
-  private static reads = new Map<string, { signature: string; json: string; bytes: number }>();
-  private static readBytes = 0;
-  private static reading = new Map<string, Promise<string>>();
-  private static hashes = new Map<string, string>();
-  private static hashing = new Map<string, Promise<string>>();
-  private static fileIdentity(s: any): string {
-    return [s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs,s.mode].join(':');
+  private readCache!: ReadCacheManager;
+  private readUncachedPromise(name: string): Promise<Manifest> {
+    return new Promise<Manifest>((resolve, reject) => this.readPackageUncached(name, (error: any, value: Manifest) => error ? reject(error) : resolve(value)));
   }
-  private async readIdentity(): Promise<string> {
-    const directory = await stat(this.path, { bigint: true });
-    const metadata = await stat(join(this.path, 'package.json'), { bigint: true });
-    const files = (await readdir(this.path)).filter(f => f.endsWith('.tgz')).sort();
-    const identities: string[] = [OfflinePackageStorage.fileIdentity(directory), OfflinePackageStorage.fileIdentity(metadata)];
-    // Bound stat fan-out even when a package has hundreds of cached versions.
-    for (let i=0;i<files.length;i+=8) identities.push(...await Promise.all(files.slice(i,i+8).map(async f => f+':'+OfflinePackageStorage.fileIdentity(await stat(join(this.path,f),{bigint:true})))));
-    return identities.join('\n');
+  private cachedRead(name: string): Promise<Manifest> {
+    return this.readCache.read(this.path, name, this.readCache.mode(this.config, name), () => this.readUncachedPromise(name));
   }
-  private async cachedRead(name: string): Promise<Manifest> {
-    const proxy = typeof this.config.getMatchedPackagesSpec === 'function' ? this.config.getMatchedPackagesSpec(name)?.proxy : undefined;
-    const key = JSON.stringify([resolve(this.path),name,this.config.offline,proxy,this.config.verifyChecksum,this.config.minTarballSize]);
-    const rawRead = () => new Promise<Manifest>((resolve,reject)=>this.readPackageUncached(name,(error:any,data:Manifest)=>error?reject(error):resolve(data)));
-    let signature: string;
-    try { signature = await this.readIdentity(); } catch { return rawRead(); }
-    const cached = OfflinePackageStorage.reads.get(key);
-    if(cached?.signature===signature){
-      OfflinePackageStorage.reads.delete(key);OfflinePackageStorage.reads.set(key,cached);
-      return JSON.parse(cached.json); // Callers may mutate their response; never share it.
-    }
-    const flight = key+'\0'+signature;
-    let pending = OfflinePackageStorage.reading.get(flight);
-    if(!pending){
-      pending=(async()=>{
-        const data=await rawRead(),json=JSON.stringify(data),bytes=Buffer.byteLength(json);
-        if(bytes<=16*1024**2 && signature===await this.readIdentity()){
-          const previous=OfflinePackageStorage.reads.get(key);
-          if(previous)OfflinePackageStorage.readBytes-=previous.bytes;
-          OfflinePackageStorage.reads.delete(key);OfflinePackageStorage.reads.set(key,{signature,json,bytes});OfflinePackageStorage.readBytes+=bytes;
-          while(OfflinePackageStorage.readBytes>16*1024**2 || OfflinePackageStorage.reads.size>64){const oldest=OfflinePackageStorage.reads.keys().next().value!;const entry=OfflinePackageStorage.reads.get(oldest)!;OfflinePackageStorage.readBytes-=entry.bytes;OfflinePackageStorage.reads.delete(oldest);}
-        }
-        return json;
-      })();
-      OfflinePackageStorage.reading.set(flight,pending);
-    }
-    try{return JSON.parse(await pending);}finally{if(OfflinePackageStorage.reading.get(flight)===pending)OfflinePackageStorage.reading.delete(flight);}
+  /** Returns the original verification witness, never a newly stamped identity. */
+  warmRead(name: string, forceRehash = false): Promise<import('./read-cache').WarmResult> {
+    return this.readCache.readForWarmup(this.path, name, this.readCache.mode(this.config, name), () => this.readUncachedPromise(name), forceRehash);
   }
   private config: OfflineStorageConfig;
   protected logger: Logger;
@@ -97,6 +62,7 @@ export class OfflinePackageStorage extends LocalFS {
     super(path, logger);
     this.config = config;
     this.logger = logger;
+    this.readCache = getReadCacheManager(config, config.storage as string || dirname(this.path));
 
     // 添加构造函数日志，确认插件被加载
     this.logger.warn(
@@ -425,6 +391,11 @@ export class OfflinePackageStorage extends LocalFS {
     void this.cachedRead(name).then(data=>cb(null,data),error=>cb(error));
   }
 
+  private readLocalManifest(name: string, callback: Callback): void {
+    if (!this.readCache.isBackground()) { super.readPackage(name, callback); return; }
+    void this.readCache.readBackgroundManifest(join(this.path, 'package.json')).then(data => callback(null, data), error => callback(error));
+  }
+
   private readPackageUncached(name: string, cb: Callback): void {
     // 尝试获取包的访问配置
     let packageAccess: any = { proxy: [] };
@@ -466,7 +437,7 @@ export class OfflinePackageStorage extends LocalFS {
       `[verdaccio-offline-storage/readPackage] Resolving package @{packageName} in ${resolveMode} mode`
     );
 
-    super.readPackage(name, async (err: any, data: Manifest) => {
+    this.readLocalManifest(name, async (err: any, data: Manifest) => {
       if (err) {
         cb(err, data);
         return;
@@ -492,7 +463,7 @@ export class OfflinePackageStorage extends LocalFS {
 
           // 1. 检查文件大小（低开销）
           try {
-            const fileStat = await stat(tarballPath);
+            const fileStat = await this.readCache.statFile(tarballPath);
             if (fileStat.size < minSize) {
               this.logger.warn(
                 { packageName: name, item, size: fileStat.size },
@@ -791,24 +762,8 @@ export class OfflinePackageStorage extends LocalFS {
     return requestedTarballName;
   }
 
-  private async computeTarballShasum(filePath: string): Promise<string> {
-    const identity=OfflinePackageStorage.fileIdentity(await stat(filePath,{bigint:true})),key=resolve(filePath)+'\0'+identity;
-    const hit=OfflinePackageStorage.hashes.get(key);
-    if(hit){OfflinePackageStorage.hashes.delete(key);OfflinePackageStorage.hashes.set(key,hit);return hit;}
-    let pending=OfflinePackageStorage.hashing.get(key);
-    if(!pending){
-      pending=new Promise<string>((resolve,reject)=>{
-        const sha1=createHash('sha1'),stream=createReadStream(filePath);
-        stream.on('data',(chunk:Buffer|string)=>sha1.update(chunk));stream.on('end',()=>resolve(sha1.digest('hex')));stream.on('error',reject);
-      }).then(async hash=>{
-        if(OfflinePackageStorage.fileIdentity(await stat(filePath,{bigint:true}))!==identity)throw new Error('Tarball changed during checksum read');
-        OfflinePackageStorage.hashes.set(key,hash);
-        while(OfflinePackageStorage.hashes.size>2048)OfflinePackageStorage.hashes.delete(OfflinePackageStorage.hashes.keys().next().value!);
-        return hash;
-      });
-      OfflinePackageStorage.hashing.set(key,pending);
-    }
-    try{return await pending;}finally{if(OfflinePackageStorage.hashing.get(key)===pending)OfflinePackageStorage.hashing.delete(key);}
+  private computeTarballShasum(filePath: string): Promise<string> {
+    return this.readCache.hash(filePath);
   }
 
   private getScopedTarballNameCandidates(version: string): string[] {

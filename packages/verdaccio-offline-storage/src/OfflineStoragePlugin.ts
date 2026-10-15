@@ -1,3 +1,4 @@
+import { getReadCacheManager, ReadCacheManager, selectLockfilePackages } from './read-cache';
 import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { Logger, Callback } from '@verdaccio/types';
@@ -32,6 +33,7 @@ try {
  * @see https://verdaccio.org/docs/en/plugin-storage
  */
 export default class OfflineStoragePlugin extends LocalDatabase {
+  private readCache!: ReadCacheManager;
   protected config: OfflineStorageConfig;
   protected logger: Logger;
   protected data: { list: string[] };
@@ -41,6 +43,15 @@ export default class OfflineStoragePlugin extends LocalDatabase {
     this.config = config;
     this.logger = options.logger;
     this.data = { list: [] };
+    this.readCache = getReadCacheManager(config, config.storage as string);
+    const warmup = config.readCache?.warmup;
+    if (warmup?.packages?.length || warmup?.lockfile) setImmediate(async () => {
+      try {
+        const names = [...(warmup.packages || []), ...(warmup.lockfile ? await selectLockfilePackages(warmup.lockfile, warmup.maxPackages) : [])];
+        this.readCache.startWarmup(names);
+      } catch (error: any) { this.logger.warn({ error: error.message }, 'Read-cache warmup was not started'); }
+    });
+
 
     if (config.offline) {
       this.logger.warn(
@@ -60,6 +71,7 @@ export default class OfflineStoragePlugin extends LocalDatabase {
    * Packages with no cached versions (only package.json file in the directory) are ignored.
    */
   get(callback: Callback): void {
+
     const packages: string[] = [];
 
     this.search(
@@ -119,4 +131,13 @@ export default class OfflineStoragePlugin extends LocalDatabase {
 
     return new OfflinePackageStorage(storagePath, this.logger, this.config) as unknown as pluginUtils.StorageHandler;
   }
+  rebuildReadCache(): Promise<any> { return this.readCache.rebuildPersistent(); }
+  getReadCacheMetrics(): any { return this.readCache.stats(); }
+  warmReadCache(packages: string[], forceRehash = false): any { return this.readCache.startWarmup(packages, forceRehash); }
+  async warmReadCacheFromLockfile(file: string, forceRehash = false): Promise<any> {
+    return this.readCache.startWarmup(await selectLockfilePackages(file, this.config.readCache?.warmup?.maxPackages), forceRehash);
+  }
+  cancelReadCacheWarmup(): any { return this.readCache.cancelWarmup(); }
+
+
 }

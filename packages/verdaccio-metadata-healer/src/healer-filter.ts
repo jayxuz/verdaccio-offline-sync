@@ -374,6 +374,12 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
 
 
 
+    // Reuse storage-plugin metrics; no cache implementation or mutating control is duplicated here.
+    app.get('/_/healer/cache/performance', (_req: any, res: any) => {
+      const plugin = storage?.localStorage?.storagePlugin;
+      res.json(typeof plugin?.getReadCacheMetrics === 'function' ? plugin.getReadCacheMetrics() : { enabled: false, reason: 'Storage does not provide read-cache metrics' });
+    });
+
     app.use(mirrorRouter(this.storagePath, '/_/healer/mirror', { registryURL: (this.config as any).mirrorRegistryURL || ((this.config as any).host ? 'http://' + (this.config as any).host : undefined) }, storage));
 
     this.importedPackageRefresher = new ImportedPackageRefresher(
