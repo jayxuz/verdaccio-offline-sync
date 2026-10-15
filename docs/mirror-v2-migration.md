@@ -56,3 +56,7 @@
 写入者记录同时绑定系统boot ID、/proc启动时间和PID命名空间，不只依赖PID或超时。旧boot、同PID不同启动身份及choosing/ticket阶段死亡不会阻塞；活持有者不被接管。同boot跨PID命名空间共享缓存、无法验证身份或非Linux写入均fail-closed，需要人工确认部署边界；不调整宿主安全设置。没有启动身份的旧开发记录不能凭超时抢占。当前首版只验证Linux/WSL同一PID命名空间、本地文件系统。
 
 1174制品包衔接见 [修正版导入步骤](repair-bundle-handoff.md)。
+
+## 2026-10-15 目标服务器验收补充
+
+最新候选 `70489f9` 已验证 Node22 / Verdaccio6.2.4 的真实冷下载、双向同步、v1重建及metadata修复。已验证v2包重试会先核对制品并集，补齐缺失安装字段和dist后复验原target_root；制品或业务metadata漂移时拒绝旧回执，应交换新完整清单。零制品传输也补齐metadata，既有目标字段优先保留。标准存储的冷下载和healer自动保存复用锁内更新/安全创建适配器，不再仅依赖自定义upsert。详见 [目标服务器验收与操作说明](target-server-validation-2026-10-15.md)。
