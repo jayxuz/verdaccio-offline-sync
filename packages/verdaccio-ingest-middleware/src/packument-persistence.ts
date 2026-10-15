@@ -1,4 +1,4 @@
-import type { Manifest } from '@verdaccio/types';
+import { persistVerdaccioMetadata } from './mirror-core';
 
 export type PackumentPersistence = (
   verdaccioStorage: any,
@@ -15,20 +15,5 @@ export const persistPackumentWithVerdaccioStorage: PackumentPersistence = async 
   packageName,
   packument
 ) => {
-  const getPackageStorage = verdaccioStorage?.localStorage?._getLocalStorage;
-  const packageStorage = typeof getPackageStorage === 'function'
-    ? getPackageStorage.call(verdaccioStorage.localStorage, packageName)
-    : undefined;
-
-  if (!packageStorage || typeof packageStorage.upsertPackage !== 'function') {
-    throw new Error(`Package storage for ${packageName} does not support upsertPackage`);
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    packageStorage.upsertPackage(
-      packageName,
-      packument as Manifest,
-      (error?: Error | null) => error ? reject(error) : resolve()
-    );
-  });
+  await persistVerdaccioMetadata(verdaccioStorage, packageName, packument);
 };

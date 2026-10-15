@@ -98,6 +98,22 @@ describe('PackageDownloader.savePackument', () => {
     await assert.rejects(access(join(storagePath, 'demo', 'package.json')), { code: 'ENOENT' });
   });
 
+  it('persists cold downloads through the standard Verdaccio locked update adapter', async () => {
+    const storagePath = await mkdtemp(join(tmpdir(), 'package-downloader-'));
+    temporaryDirectories.push(storagePath);
+    const { logger } = createLogger();
+    const current: any = { name: 'demo', versions: { '2.0.0': { name: 'demo', version: '2.0.0', privateNote: 'retain' } }, 'dist-tags': { private: '2.0.0' }, _uplinks: { target: true } };
+    let updates = 0;
+    const storage = { localStorage: { _getLocalStorage: () => ({}), _updatePackage(_name: string, update: any, done: any) { updates++; update(current, done); } } };
+    const downloader = new PackageDownloader({ enabled: true }, storagePath, logger, storage);
+    await downloader.savePackument('demo', { name: 'demo', versions: { '1.0.0': { name: 'demo', version: '1.0.0', type: 'module' } }, 'dist-tags': { latest: '1.0.0' } });
+    assert.equal(updates, 1);
+    assert.equal(current.versions['1.0.0'].type, 'module');
+    assert.equal(current.versions['2.0.0'].privateNote, 'retain');
+    assert.equal(current['dist-tags'].private, '2.0.0');
+    await assert.rejects(access(join(storagePath, 'demo', 'package.json')), { code: 'ENOENT' });
+  });
+
   it('fails explicitly when Verdaccio package storage has no upsert capability', async () => {
     const storagePath = await mkdtemp(join(tmpdir(), 'package-downloader-'));
     temporaryDirectories.push(storagePath);

@@ -1,3 +1,4 @@
+import { persistVerdaccioMetadata } from './mirror-core';
 import { mirrorRouter } from './mirror-router';
 import express, { Router, Express, Request, Response } from 'express';
 import { pluginUtils } from '@verdaccio/core';
@@ -296,26 +297,8 @@ export default class MetadataHealerFilter extends pluginUtils.Plugin<HealerConfi
    */
   private async saveMetadataViaStorage(packageName: string, metadata: Manifest): Promise<void> {
     try {
-      // 获取包的存储实例
-      const getPackageStorage = this.verdaccioStorage?.localStorage?._getLocalStorage;
-      const packageStorage = typeof getPackageStorage === 'function'
-        ? getPackageStorage.call(this.verdaccioStorage.localStorage, packageName)
-        : undefined;
-
-      if (!packageStorage || typeof packageStorage.upsertPackage !== 'function') {
-        throw new Error(`Package storage for ${packageName} does not support upsertPackage`);
-      }
-
-      // 使用 offline-storage 的锁内 upsert 保存元数据
-      await new Promise<void>((resolve, reject) => {
-        packageStorage.upsertPackage(packageName, metadata, (err: any) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
-          }
-        });
-      });
+      // 兼容 offline-storage upsert 与标准 Verdaccio 5/6 的锁内更新。
+      await persistVerdaccioMetadata(this.verdaccioStorage, packageName, metadata);
 
       this.logger.info(
         { packageName },
