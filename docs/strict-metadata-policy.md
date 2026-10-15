@@ -67,3 +67,5 @@ node node_modules/tsx/dist/cli.mjs --test --test-concurrency=1 packages/*/test/*
 `strict-metadata-policy.test.ts` 用真实本地 tgz 和真实 Verdaccio 6.2.4 回环 HTTP 验证：非最高 latest、私有标签、预发布标签、空标签、缺失制品标签过滤、模式隔离、metadata 更新失效、worker 预热、内存命中、SQLite 跨进程命中、新包/五个最小 metadata 重建、全跳过重复 v1 导入及重启。下载校验 SHA1/SHA512，安装字段只解析不执行。`mirror-core.test.ts` 另覆盖 v2 sidecar 标签/时间与零制品导入。
 
 真实 HTTP 测试需要本地安装 Verdaccio 6.2.4；没有该依赖会明确 skipped，应由交付验收补齐。这里的局部真实 HTTP 回归不代替交付镜像在目标 Node 版本上的完整 1174 版本验收。未执行生产部署、导入或基线推进。
+
+认证跨重启保持的修复与验证见 [重启认证验收](restart-auth-validation-2026-10-15.md)；保留原认证配置，不通过重新登录代替原 token 的重启验收。

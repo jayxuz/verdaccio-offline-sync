@@ -36,7 +36,7 @@ export default class OfflineStoragePlugin extends LocalDatabase {
   private readCache!: ReadCacheManager;
   protected config: OfflineStorageConfig;
   protected logger: Logger;
-  protected data: { list: string[] };
+  declare protected data: { list: string[]; [key: string]: unknown };
 
   constructor(config: OfflineStorageConfig, options: PluginOptions) {
     if (config.metadataPolicy && !['preserve', 'local-latest'].includes(config.metadataPolicy)) throw new Error('Unknown metadataPolicy');
@@ -47,7 +47,9 @@ export default class OfflineStoragePlugin extends LocalDatabase {
     super(config, options.logger);
     this.config = config;
     this.logger = options.logger;
-    this.data = { list: [] };
+    // LocalDatabase has already loaded its complete database, including the signing secret.
+    // Keep that object intact so inherited getSecret/setSecret and future fields survive restarts.
+    if (!Array.isArray(this.data.list)) this.data.list = [];
     this.readCache = getReadCacheManager(config, config.storage as string);
     const warmup = config.readCache?.warmup;
     if (warmup?.packages?.length || warmup?.lockfile) setImmediate(async () => {

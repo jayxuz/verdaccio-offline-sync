@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, symlink, rm, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { fork } from 'node:child_process';
 import tar from 'tar';
 import { OfflinePackageStorage } from '../../verdaccio-offline-storage/src/OfflinePackageStorage';
@@ -80,7 +80,7 @@ test('strict upsert and legacy sidecars preserve target tags/time and do not inv
   } finally { getReadCacheManager(f.config, f.data).close(); await rm(f.root, { recursive: true, force: true }); }
 });
 
-test('real Verdaccio HTTP preserves tags/time through warmup, memory, persistent restart and repeated v1 import', { timeout: 90000 }, async t => {
+test('real Verdaccio HTTP keeps the original authenticated token and metadata through warmup, persistent restarts and repeated v1 import', { timeout: 90000 }, async t => {
   let modulePath: string;
   try { modulePath = require.resolve('verdaccio'); } catch {
     const dir = (await readdir(path.join(repo, 'node_modules/.pnpm'))).find(n => n.startsWith('verdaccio@6.2.4_'));
@@ -92,6 +92,8 @@ test('real Verdaccio HTTP preserves tags/time through warmup, memory, persistent
     const plugins = path.join(f.root, 'plugins'); await mkdir(path.join(plugins, '@jayxuz'), { recursive: true });
     await symlink(path.join(repo, 'packages/verdaccio-offline-storage'), path.join(plugins, '@jayxuz/verdaccio-offline-storage'));
     await symlink(path.join(repo, 'packages/verdaccio-metadata-healer'), path.join(plugins, 'verdaccio-metadata-healer'));
+    const htpasswdPath = path.dirname(require.resolve('verdaccio-htpasswd/package.json', { paths: [modulePath] }));
+    await symlink(htpasswdPath, path.join(plugins, 'verdaccio-htpasswd'));
     const versions: any = {};
     for (const v of ['1.0.0', '2.0.0', '3.0.0-beta.1']) versions[v] = await artifact(f.root, 'demo', v);
     const tags = { latest: '1.0.0', private: '1.0.0', next: '3.0.0-beta.1' }, time = { created: '2020-01-01T00:00:00Z', '1.0.0': '2020-01-01T00:00:00Z' };
@@ -101,7 +103,7 @@ test('real Verdaccio HTTP preserves tags/time through warmup, memory, persistent
       const v = name === 'pre' ? '1.0.0-beta.1' : '1.0.0'; const entry = await artifact(f.root, name, v);
       await writeFile(path.join(f.data, name, 'package.json'), JSON.stringify({ name, versions: { [v]: entry }, 'dist-tags': name === 'pre' ? { next: v } : {} }));
     }
-    const cfg: any = { storage: f.data, plugins, self_path: path.join(f.root, 'config.yaml'), uplinks: {}, packages: { '**': { access: '$all', publish: '$authenticated' } }, store: { '@jayxuz/verdaccio-offline-storage': { ...f.config, storage: undefined } }, middlewares: { 'metadata-healer': { enabled: true, enableImportUI: true, metadataPolicy: 'preserve', autoUpdateLatest: false, autoSaveMetadata: false } }, log: { type: 'stdout', format: 'json', level: 'fatal' }, web: { enable: false }, auth: {} };
+    const cfg: any = { storage: f.data, plugins, self_path: path.join(f.root, 'config.yaml'), uplinks: {}, packages: { '**': { access: '$authenticated', publish: '$authenticated' } }, store: { '@jayxuz/verdaccio-offline-storage': { ...f.config, storage: undefined } }, middlewares: { 'metadata-healer': { enabled: true, enableImportUI: true, metadataPolicy: 'preserve', autoUpdateLatest: false, autoSaveMetadata: false } }, log: { type: 'stdout', format: 'json', level: 'fatal' }, web: { enable: false }, auth: { htpasswd: { file: path.join(f.root, 'htpasswd') } } };
     const cfgFile = path.join(f.root, 'config.json'); await writeFile(cfgFile, JSON.stringify(cfg));
     const launcher = path.join(f.root, 'server.cjs');
     await writeFile(launcher, `const fs=require('fs'),cfg=JSON.parse(fs.readFileSync(process.argv[2]));
@@ -111,22 +113,32 @@ require(${JSON.stringify(modulePath)}).runServer(cfg).then(server=>{server.liste
     const start = () => new Promise<number>((resolve, reject) => { child = fork(launcher, [cfgFile], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] }); let logs = ''; child.stdout.on('data', (b: Buffer) => logs += b); child.stderr.on('data', (b: Buffer) => logs += b); child.once('error', reject); child.once('exit', (code: any) => reject(new Error(`HTTP child exit ${code}: ${logs}`))); child.once('message', (m: any) => m.port ? resolve(m.port) : reject(new Error(JSON.stringify(m)))); });
     const stop = () => new Promise<void>(resolve => { child.once('exit', () => { child = undefined; resolve(); }); child.send('stop'); });
     let port = await start();
+    const registration = await fetch(`http://127.0.0.1:${port}/-/user/org.couchdb.user:restart-test`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'restart-test', password: randomBytes(24).toString('base64url') }) });
+    assert.equal(registration.status, 201, 'isolated test registration succeeds');
+    const credentials: any = await registration.json();
+    assert.equal(typeof credentials.token === 'string' && credentials.token.length > 0, true, 'initial API token issued');
+    const authorization = `Bearer ${credentials.token}`;
+    const databaseFile = path.join(f.data, '.verdaccio-db.json');
+    const initialSecret = JSON.parse(await readFile(databaseFile, 'utf8')).secret;
+    assert.equal(typeof initialSecret === 'string' && initialSecret.length > 0, true, 'database has signing secret');
+    const assertSameSecret = async () => { const current = JSON.parse(await readFile(databaseFile, 'utf8')); assert.equal(current.secret === initialSecret, true, 'database signing secret unchanged'); };
     const warm = new Promise<any>(resolve => child.once('message', resolve)); child.send('warm'); assert.equal((await warm).warm.status, 'completed');
     const check = async () => {
+      assert.equal((await fetch(`http://127.0.0.1:${port}/demo`)).status, 401, 'anonymous metadata access remains denied');
       for (const name of names) {
         for (const accept of ['application/json', 'application/vnd.npm.install-v1+json']) {
-          const response = await fetch(`http://127.0.0.1:${port}/${name}`, { headers: { accept } }); assert.equal(response.status, 200, await response.clone().text());
+          const response = await fetch(`http://127.0.0.1:${port}/${name}`, { headers: { accept, authorization } }); assert.equal(response.status, 200, await response.clone().text());
           const m: any = await response.json();
           assert.deepEqual(m['dist-tags'], name === 'demo' ? tags : name === 'pre' ? { next: '1.0.0-beta.1' } : {}, name);
           if (accept === 'application/json') assert.deepEqual(m.time, name === 'demo' ? time : {}, name);
-          for (const value of Object.values(m.versions) as any[]) { const download = await fetch(value.dist.tarball); assert.equal(download.status, 200); const bytes = Buffer.from(await download.arrayBuffer()); assert.equal(createHash('sha1').update(bytes).digest('hex'), value.dist.shasum); assert.equal('sha512-' + createHash('sha512').update(bytes).digest('base64'), value.dist.integrity); }
+          for (const value of Object.values(m.versions) as any[]) { const download = await fetch(value.dist.tarball, { headers: { authorization } }); assert.equal(download.status, 200); const bytes = Buffer.from(await download.arrayBuffer()); assert.equal(createHash('sha1').update(bytes).digest('hex'), value.dist.shasum); assert.equal('sha512-' + createHash('sha512').update(bytes).digest('base64'), value.dist.integrity); }
         }
       }
     };
     await check(); await check();
     const stats = await (await fetch(`http://127.0.0.1:${port}/_/healer/cache/performance`)).json() as any;
     assert(stats.counters.metadataHits > 0); assert(stats.counters.warmAdoptions > 0);
-    await stop(); port = await start(); await check();
+    await stop(); port = await start(); await check(); await assertSameSecret();
     const persisted = await (await fetch(`http://127.0.0.1:${port}/_/healer/cache/performance`)).json() as any;
     assert(persisted.counters.persistentMetadataHits > 0); assert.equal(persisted.counters.hashBytes, 0);
     // Tarball-only legacy bundle exercises new/minimal metadata and a target-only demo version.
@@ -145,12 +157,12 @@ require(${JSON.stringify(modulePath)}).runServer(cfg).then(server=>{server.liste
     for (const name of names.filter(n => n === 'blank' || n.startsWith('minimal-'))) await unlink(path.join(f.data, name, 'package.json'));
     await rm(path.join(f.data, 'minimal-4'), { recursive: true });
     for (let i=0; i<2; i++) {
-      const response = await fetch(`http://127.0.0.1:${port}/_/healer/import/local`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: archive, rebuildMetadata: true, validateChecksum: true }) });
+      const response = await fetch(`http://127.0.0.1:${port}/_/healer/import/local`, { method: 'POST', headers: { 'content-type': 'application/json', authorization }, body: JSON.stringify({ path: archive, rebuildMetadata: true, validateChecksum: true }) });
       assert.equal(response.status, 200, await response.clone().text()); const task: any = await response.json();
       let status: any; for (let n=0; n<200; n++) { status = await (await fetch(`http://127.0.0.1:${port}/_/healer/import/status/${task.taskId}`)).json(); if (['completed', 'failed'].includes(status.status)) break; await new Promise(r=>setTimeout(r,25)); }
       assert.equal(status.status, 'completed', JSON.stringify(status)); assert.equal(status.result.failed, 0); assert.equal(status.result.metadataRebuilt, true); assert.equal(status.result.imported, i === 0 ? 1 : 0); assert.equal(status.result.skipped, entries.length - (i === 0 ? 1 : 0)); await check();
       for (const name of names.filter(n => n.startsWith('minimal-'))) { const disk = JSON.parse(await readFile(path.join(f.data, name, 'package.json'), 'utf8')); assert.deepEqual(disk['dist-tags'], {}); assert.deepEqual(disk.time, {}); assert.equal(disk.versions['1.0.0'].hasInstallScript, true); assert.deepEqual(disk.versions['1.0.0'].dependencies, { dependency: '^1.0.0' }); }
     }
-    await stop(); port = await start(); await check(); await stop();
+    await stop(); port = await start(); await check(); await assertSameSecret(); await stop();
   } finally { if (child) { child.kill(); await new Promise(resolve => child.once('exit', resolve)); } await rm(f.root, { recursive: true, force: true }); }
 });
