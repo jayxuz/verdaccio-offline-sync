@@ -701,6 +701,11 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       });
 
       const platformPackages: PackageToDownload[] = [];
+      // 与普通依赖使用同一次扫描得到的有效 tarball 版本，避免平台包反复下载。
+      // 元数据中的版本列表不代表本地已经缓存了对应文件。
+      const cachedVersions = new Map(
+        cachedPackages.map((pkg) => [pkg.name, new Set(pkg.versions)])
+      );
       const binaryCandidates = this.collectPlatformCandidates(cachedPackages, missingPackages);
       let binaryChecked = 0;
       const binaryTotal = Math.max(1, binaryCandidates.length);
@@ -721,6 +726,9 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
                 targetPlatforms
               );
               for (const dep of platformDeps) {
+                if (cachedVersions.get(dep.name)?.has(dep.version)) {
+                  continue;
+                }
                 platformPackages.push({
                   name: dep.name,
                   version: dep.version,
