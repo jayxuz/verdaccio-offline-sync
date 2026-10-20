@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { spawn } from 'node:child_process';
-import tar from 'tar';
+import * as tar from 'tar';
 import express from 'express';
 import { MirrorRepository, reconcile, stableRead, getWriterIdentity, persistVerdaccioMetadata } from '../src/mirror-core';
 import { mirrorRouter, mirrorHTML } from '../src/mirror-router';

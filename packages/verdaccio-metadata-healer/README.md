@@ -14,7 +14,7 @@ A Verdaccio plugin suite for automatic metadata healing, metadata sync, and diff
 - **Tarball Scanning**: Scans storage directory for `.tgz` files and extracts metadata
 - **SHA Sum Caching**: Caches computed checksums for performance
 - **Auto-Update Latest Tag**: Automatically updates `dist-tags.latest` to the highest available version
-- **Non-Destructive**: Repairs metadata on-the-fly without modifying original files
+- **Storage-coordinated persistence**: Persists repairs and imports through storage adapters, retaining target-owned fields and rejecting conflicting artifacts
 - **Metadata Sync** (New): Sync package metadata from upstream registry to local storage, supports single package and batch sync
 - **Scoped Package Support** (New): Optimized package name extraction logic, supports `@scope/package` nested directory structure
 - **Storage Access Fix**: Fixed package storage retrieval method, using `_getLocalStorage` instead of `getPackageStorage` for correct storage instance access
@@ -32,6 +32,12 @@ A Verdaccio plugin suite for automatic metadata healing, metadata sync, and diff
 - **Checksum Validation**: Validates file integrity during import
 - **Import History**: Tracks all import operations
 - **10GB Upload Limit** (New): File upload size limit increased from 2GB to 10GB
+
+## Upgrading to 2.0.0
+
+`/_/healer/mirror/ui` adds bidirectional reconciliation, verified receipts and saved version history. Enable `middlewares.metadata-healer.enableImportUI: true` and set the actual `mirrorRegistryURL`. v1 imports remain supported, with mandatory validation and rejection of same-version content conflicts. Repeated imports repair/register metadata, recover installation fields and retain target-owned values without executing package scripts.
+
+To preserve authoritative tags and publication times, configure `metadataPolicy: preserve` together with storage 3.2.0. Tarball-only reconstruction does not invent publication times. Version 2.0.0 requires Node.js ≥22.9.0; mirror writes require Linux and a local POSIX filesystem. See [migration](https://github.com/jayxuz/verdaccio-offline-sync/blob/main/docs/mirror-v2-migration.md) and [strict policy](https://github.com/jayxuz/verdaccio-offline-sync/blob/main/docs/strict-metadata-policy.md).
 
 ## Installation
 
@@ -161,9 +167,9 @@ curl http://localhost:4873/_/healer/import/history
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `overwrite` | boolean | false | Overwrite existing files |
+| `overwrite` | boolean | false | Compatibility parameter; identical artifacts are skipped and conflicting artifacts never overwritten |
 | `rebuildMetadata` | boolean | true | Rebuild package metadata after import |
-| `validateChecksum` | boolean | true | Validate file checksums |
+| `validateChecksum` | boolean | true | Compatibility parameter; SHA256, size and archive validation are always enforced |
 
 ### Import from Local Path
 
@@ -237,7 +243,7 @@ This plugin is designed to work with `verdaccio-ingest-middleware` for a complet
 
 ## Requirements
 
-- Node.js >= 18.0.0
+- Node.js >= 22.9.0
 - Verdaccio >= 5.0.0
 
 ## License

@@ -52,9 +52,15 @@ This is an improved fork of the original `verdaccio-offline-storage` plugin. Key
 - **No Lockfile Required**: All dependencies resolve correctly if they were cached when online
 - **Transparent**: Works with existing `local-storage` cache without modifications
 - **Selective Offline Mode**: Can be enabled globally or per-package based on proxy configuration
-- **Tarball Integrity Verification**: Validates local tarball SHA-1 checksums against metadata and auto-removes corrupt files
+- **Tarball Integrity Verification**: Validates local tarball SHA-1 checksums against metadata and excludes checksum failures from metadata while preserving files for inspection or repair
 - **Concurrent Update Safety**: Normalizes and serializes manifest updates for compatibility with incomplete historical caches and concurrent sync operations
 - **Web UI Integration**: Lists all locally available packages in Verdaccio's web interface
+
+## Upgrading to 3.2.0
+
+Preserves the parent storage database, signing secret, package list and future fields across restarts. Bounded memory caching coalesces reads; optional independent SQLite persistence and selected hotspot warmup accelerate verified reads without modifying package storage. Persistence requires built-in `node:sqlite`; unsupported runtimes fall back to memory.
+
+The default `metadataPolicy: local-latest` remains compatible. For authoritative tags and publication times, enable `metadataPolicy: preserve` together with healer 2.0.0 middleware; missing tags/timestamps are not invented. See [read caching](https://github.com/jayxuz/verdaccio-offline-sync/blob/main/docs/read-cache-operations.md) and [strict policy](https://github.com/jayxuz/verdaccio-offline-sync/blob/main/docs/strict-metadata-policy.md).
 
 ## Installation
 

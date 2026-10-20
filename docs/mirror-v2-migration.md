@@ -2,9 +2,9 @@
 
 ## 范围和运行时
 
-两端入口为 `/_/ingest/mirror/ui`、`/_/healer/mirror/ui`。旧管理页面提供链接。healer 沿用 `enableImportUI: true` 开关。包仍支持 Node ≥18；实际验证为 Node 24.19.0 / Verdaccio 6.2.4。设置 `mirrorRegistryURL` 为目标用户实际使用的 registry 基址（包括 HTTPS 或反向代理前缀）；已有 host 作为兼容默认值。
+两端入口为 `/_/ingest/mirror/ui`、`/_/healer/mirror/ui`。旧管理页面提供链接。healer 沿用 `enableImportUI: true` 开关。摄取和修复插件 2.0.0 要求 Node ≥22.9.0，存储插件 3.2.0 仍支持 Node ≥18；实际验证为 Node 24.19.0 / Verdaccio 6.2.4。设置 `mirrorRegistryURL` 为目标用户实际使用的 registry 基址（包括 HTTPS 或反向代理前缀）；已有 host 作为兼容默认值。
 
-本版没有添加运行时依赖，也不安装数据库服务。Node 18 没有内置 SQLite，现有依赖无 SQLite 驱动；为保持离线安装兼容，首版使用带校验的 `.mirror-sync/index.json` 包/版本事件索引（包含当前快照头）、不可变 JSON 快照、逐传输日志及原子替换。索引是可丢弃派生数据，可从已保存的成功扫描重建；repository 身份、观察序号时钟、已保存快照、传输日志和回执不能作为缓存清除。SQLite 可在后续提供可选实现，不影响协议。目录 fsync/同盘硬链接要求本地 POSIX 文件系统；当前 Windows 仅作为 WSL 操作入口，尚未验证直接 Windows 存储。
+镜像协议复用已有的归档依赖，不安装数据库服务；2.0.0 将插件实际使用的 `express` 和 `@verdaccio/core` 显式列为运行时依赖，确保独立 npm 安装可用。镜像历史使用带校验的 `.mirror-sync/index.json` 包/版本事件索引（包含当前快照头）、不可变 JSON 快照、逐传输日志及原子替换。历史索引可从已保存的成功扫描重建；repository 身份、观察序号时钟、已保存快照、传输日志和回执不能作为缓存清除。storage 3.2.0 的可选 SQLite 读取索引是另一套独立派生缓存，不替代镜像历史或回执。目录 fsync/同盘硬链接要求本地 POSIX 文件系统；当前 Windows 仅作为 WSL 操作入口，尚未验证直接 Windows 存储。
 
 ## 文件契约
 

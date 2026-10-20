@@ -52,9 +52,15 @@
 - **无需锁文件**：如果在线时已缓存，所有依赖都能正确解析
 - **透明**：与现有的 `local-storage` 缓存兼容，无需修改
 - **选择性离线模式**：可以全局启用或根据 proxy 配置按包启用
-- **Tarball 完整性校验**：校验本地 tarball SHA-1 与 metadata 是否一致，自动剔除损坏文件
+- **Tarball 完整性校验**：校验本地 tarball SHA-1 与 metadata 是否一致，从返回元数据中排除校验失败的版本，保留原文件供检查或修复
 - **并发更新安全**：规范化并串行处理清单更新，兼容不完整的历史缓存及并发同步操作
 - **Web 界面集成**：在 Verdaccio 的 Web 界面中列出所有本地可用的包
+
+## 3.2.0 升级
+
+修复重启时丢失认证签名密钥的问题，保留父存储数据库的密钥、包列表和扩展字段。读取结果使用有界内存缓存，合并并发请求；可选独立 SQLite 索引和小范围热点预热，不修改包缓存。持久缓存需要运行时内置 `node:sqlite`，不可用时回退内存。
+
+默认 `metadataPolicy: local-latest` 保持兼容。需要保留原始 `dist-tags` 和发布时间时，与 healer 2.0.0 的 middleware 同时启用 `metadataPolicy: preserve`；缺失的时间和标签不会自动生成。配置见 [读取缓存](https://github.com/jayxuz/verdaccio-offline-sync/blob/main/docs/read-cache-operations.md) 和 [严格保留模式](https://github.com/jayxuz/verdaccio-offline-sync/blob/main/docs/strict-metadata-policy.md)。
 
 ## 安装
 
@@ -115,7 +121,7 @@ store:
 ## 工作原理
 
 1. 当请求包时，插件扫描存储目录中的 `.tgz` 文件
-2. 对每个 tarball 进行校验：跳过低于最小体积阈值的文件，检查 SHA-1 是否与 metadata 一致（当 `verifyChecksum` 启用时），自动剔除损坏文件
+2. 对每个 tarball 进行校验：跳过低于最小体积阈值的文件，检查 SHA-1 是否与 metadata 一致（当 `verifyChecksum` 启用时），从返回元数据中排除校验失败的版本，保留原文件供检查或修复
 3. 过滤包元数据，只包含有有效本地 tarball 的版本
 4. 将 `dist-tags.latest` 更新为本地可用的最高稳定版本
 5. 将修改后的元数据返回给客户端

@@ -1,6 +1,6 @@
 # 离线标签与发布时间严格保留模式
 
-适用范围：Verdaccio 6.2.4，使用本仓库同一次构建的 offline-storage 与 metadata-healer。旧默认 `local-latest` 保持兼容；严格交付应显式选择 `metadataPolicy: preserve`。包版本号不代表包含本次修复，必须按源码提交与构建校验值交付。
+适用范围：Verdaccio 6.2.4，offline-storage 3.2.0 与 metadata-healer 2.0.0 起。两者应配套升级，并记录源码提交及制品校验值。旧默认 `local-latest` 保持兼容；严格交付应显式选择 `metadataPolicy: preserve`。
 
 ## 必须配置
 

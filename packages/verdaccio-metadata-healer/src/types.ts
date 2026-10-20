@@ -16,6 +16,8 @@ export interface HealerConfig {
   /** 是否在 filter_metadata 时自动保存元数据到本地（默认 true） */
   autoSaveMetadata?: boolean;
   host?: string;
+  /** 镜像导入后使用的 registry 基址，支持 HTTPS 和反向代理路径前缀。 */
+  mirrorRegistryURL?: string;
   /** 是否启用导入 Web UI（需要在 middlewares 中配置） */
   enableImportUI?: boolean;
   /** Web UI 标题 */

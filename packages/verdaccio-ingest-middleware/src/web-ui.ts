@@ -990,7 +990,8 @@ export function getWebUIHTML(config: any): string {
 
     <!-- 差分导出 -->
     <div class="card">
-      <h2>📤 差分导出</h2>
+      <h2>📤 旧格式完整导出</h2>
+      <p>此入口导出完整缓存。需要只传输对方缺少的包，请使用<a href="/_/ingest/mirror/ui">双向镜像同步</a>。</p>
       <div class="form-group">
         <label>导出历史</label>
         <div id="exportHistory" class="package-list" style="max-height: 150px;">
@@ -1000,15 +1001,15 @@ export function getWebUIHTML(config: any): string {
       <div class="form-group">
         <label>基准时间</label>
         <div class="option-row">
-          <label><input type="radio" name="exportBase" value="last" checked><span>上次导出时间</span></label>
-          <button class="help-btn" type="button">?<span class="tooltip">从上次导出时间点开始，只导出新增或修改的文件</span></button>
+          <label><input type="radio" name="exportBase" value="last" disabled><span>上次导出时间（已停用）</span></label>
+          <button class="help-btn" type="button">?<span class="tooltip">请使用双向镜像同步，按对方实际库存生成差异包。</span></button>
         </div>
         <div class="option-row">
-          <label><input type="radio" name="exportBase" value="custom"><span>自定义时间</span></label>
+          <label><input type="radio" name="exportBase" value="custom" disabled><span>自定义时间（已停用）</span></label>
           <input type="datetime-local" id="customExportTime" style="margin-left: 10px; padding: 5px;" disabled>
         </div>
         <div class="option-row">
-          <label><input type="radio" name="exportBase" value="full"><span>全量导出</span></label>
+          <label><input type="radio" name="exportBase" value="full" checked><span>全量导出</span></label>
           <button class="help-btn" type="button">?<span class="tooltip">导出所有文件，不考虑时间点</span></button>
         </div>
       </div>
@@ -1257,99 +1258,48 @@ export function getWebUIHTML(config: any): string {
     }
 
     // ==================== 元数据同步相关函数 ====================
-    const SYNC_API_BASE = '/_/healer';
-    let syncTaskId = null;
-    let syncPollInterval = null;
-
-    // 同步所有包元数据
+    // 在线元数据刷新统一使用摄取插件，不依赖离线 healer 路由。
     async function startSyncAll() {
+      document.getElementById('syncAllBtn').disabled = true;
+      document.getElementById('syncResult').classList.add('hidden');
+      document.getElementById('syncProgress').classList.remove('hidden');
+      updateSyncProgress({ status: 'running', currentPackage: '正在刷新元数据，完成后显示结果' });
       try {
-        document.getElementById('syncAllBtn').disabled = true;
-        document.getElementById('syncResult').classList.add('hidden');
-        document.getElementById('syncProgress').classList.remove('hidden');
-        addLog('正在启动全量元数据同步...', 'info');
-
-        const response = await fetch(SYNC_API_BASE + '/sync-all', {
+        const response = await fetch(API_BASE + '/refresh', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ all: true })
         });
         const data = await response.json();
-
-        if (data.success && data.taskId) {
-          syncTaskId = data.taskId;
-          addLog('同步任务已启动: ' + data.taskId + ' (共 ' + data.totalPackages + ' 个包)', 'success');
-          startSyncPolling(data.taskId);
-        } else {
-          addLog('启动同步失败: ' + (data.error || '未知错误'), 'error');
-          document.getElementById('syncAllBtn').disabled = false;
-          document.getElementById('syncProgress').classList.add('hidden');
-        }
+        if (!response.ok || !data.success) throw new Error(data.error || '刷新失败');
+        showSyncResult({ total: data.refreshed, failed: 0 });
+        addLog('元数据刷新完成: ' + data.refreshed + ' 个包', 'success');
+        refreshCacheStatus();
       } catch (error) {
-        addLog('启动同步失败: ' + error.message, 'error');
+        showSyncError(error.message);
+        addLog('元数据刷新失败: ' + error.message, 'error');
+      } finally {
         document.getElementById('syncAllBtn').disabled = false;
-        document.getElementById('syncProgress').classList.add('hidden');
       }
     }
 
-    // 同步单个包
     async function syncSinglePackage() {
       const packageName = document.getElementById('syncPackageName').value.trim();
-      if (!packageName) {
-        addLog('请输入包名', 'warning');
-        return;
-      }
-
+      if (!packageName) { addLog('请输入包名', 'warning'); return; }
       try {
-        addLog('正在同步包: ' + packageName + '...', 'info');
-        const response = await fetch(SYNC_API_BASE + '/sync/' + encodeURIComponent(packageName), {
+        const response = await fetch(API_BASE + '/refresh', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ packages: [packageName] })
         });
         const data = await response.json();
-
-        if (data.success) {
-          addLog('包 ' + packageName + ' 同步成功', 'success');
-          if (data.versions) {
-            addLog('版本数: ' + data.versions, 'info');
-          }
-        } else {
-          addLog('同步失败: ' + (data.error || '未知错误'), 'error');
-        }
+        if (!response.ok || !data.success) throw new Error(data.error || '刷新失败');
+        if (!data.refreshed) { addLog('本地未缓存该包，或上游元数据获取失败: ' + packageName, 'warning'); return; }
+        addLog('包 ' + packageName + ' 元数据刷新完成', 'success');
+        refreshCacheStatus();
       } catch (error) {
-        addLog('同步失败: ' + error.message, 'error');
+        addLog('元数据刷新失败: ' + error.message, 'error');
       }
-    }
-
-    // 开始轮询同步状态
-    function startSyncPolling(taskId) {
-      if (syncPollInterval) {
-        clearInterval(syncPollInterval);
-      }
-
-      syncPollInterval = setInterval(async () => {
-        try {
-          const response = await fetch(SYNC_API_BASE + '/sync/status/' + taskId);
-          const task = await response.json();
-
-          updateSyncProgress(task);
-
-          if (task.status === 'completed' || task.status === 'failed') {
-            clearInterval(syncPollInterval);
-            syncPollInterval = null;
-            document.getElementById('syncAllBtn').disabled = false;
-
-            if (task.status === 'completed') {
-              showSyncResult(task);
-              addLog('元数据同步完成!', 'success');
-            } else {
-              showSyncError(task.error || '未知错误');
-              addLog('元数据同步失败: ' + (task.error || '未知错误'), 'error');
-            }
-          }
-        } catch (error) {
-          addLog('获取同步状态失败: ' + error.message, 'error');
-        }
-      }, 1500);
     }
 
     // 更新同步进度
@@ -1382,40 +1332,37 @@ export function getWebUIHTML(config: any): string {
       document.getElementById('syncResultFailed').textContent = errorMsg;
     }
 
-    // 加载包列表（从 healer）
+    // 读取在线摄取插件的缓存列表。
     async function loadPackageList() {
       try {
         document.getElementById('loadPkgListBtn').disabled = true;
         document.getElementById('syncPackageList').classList.remove('hidden');
-        document.getElementById('syncPkgListContainer').innerHTML =
-          '<p style="color: #666; text-align: center; padding: 20px;">加载中...</p>';
-
-        const response = await fetch(SYNC_API_BASE + '/packages');
+        const container = document.getElementById('syncPkgListContainer');
+        container.textContent = '加载中...';
+        const response = await fetch(API_BASE + '/cache');
         const data = await response.json();
-
-        if (data.success && data.packages) {
-          const container = document.getElementById('syncPkgListContainer');
-          if (data.packages.length === 0) {
-            container.innerHTML = '<p style="color: #666; text-align: center; padding: 20px;">暂无包</p>';
-          } else {
-            container.innerHTML = data.packages.slice(0, 100).map(pkg =>
-              '<div class="package-item">' +
-                '<div>' +
-                  '<div class="package-name">' + pkg + '</div>' +
-                '</div>' +
-                '<button class="btn btn-primary" style="padding: 3px 10px; font-size: 12px;" onclick="syncPackageFromList(\\'' + pkg.replace(/'/g, "\\\\'") + '\\')">同步</button>' +
-              '</div>'
-            ).join('');
-
-            if (data.packages.length > 100) {
-              container.innerHTML += '<p style="text-align: center; color: #666; padding: 10px;">... 还有 ' +
-                (data.packages.length - 100) + ' 个包</p>';
-            }
-          }
-          addLog('已加载 ' + data.packages.length + ' 个包', 'success');
-        } else {
-          addLog('加载包列表失败: ' + (data.error || '未知错误'), 'error');
+        if (!response.ok || !Array.isArray(data.packages)) throw new Error(data.error || '加载失败');
+        container.replaceChildren();
+        for (const pkg of data.packages.slice(0, 100)) {
+          const item = document.createElement('div');
+          item.className = 'package-item';
+          const name = document.createElement('div');
+          name.className = 'package-name';
+          name.textContent = pkg.name;
+          const button = document.createElement('button');
+          button.className = 'btn btn-primary';
+          button.textContent = '同步';
+          button.onclick = () => syncPackageFromList(pkg.name);
+          item.append(name, button);
+          container.append(item);
         }
+        if (!data.packages.length) container.textContent = '暂无包';
+        if (data.packages.length > 100) {
+          const more = document.createElement('p');
+          more.textContent = '... 还有 ' + (data.packages.length - 100) + ' 个包';
+          container.append(more);
+        }
+        addLog('已加载 ' + data.packages.length + ' 个包', 'success');
       } catch (error) {
         addLog('加载包列表失败: ' + error.message, 'error');
       } finally {

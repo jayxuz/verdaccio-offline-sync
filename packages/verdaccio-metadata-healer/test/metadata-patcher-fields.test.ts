@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { test, afterEach } from 'node:test';
-import tar from 'tar';
+import * as tar from 'tar';
 import { MetadataPatcher } from '../src/metadata-patcher';
 import { ShasumCache } from '../src/shasum-cache';
 const roots:string[]=[];const logger:any={debug(){},info(){},warn(){},error(){}};

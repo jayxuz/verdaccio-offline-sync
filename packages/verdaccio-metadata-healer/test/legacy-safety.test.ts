@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test, afterEach } from 'node:test';
-import tar from 'tar';
+import * as tar from 'tar';
 import { ImportHandler } from '../src/import-handler';
 
 const dirs:string[]=[];const logger:any={info(){},debug(){},warn(){},error(){}};

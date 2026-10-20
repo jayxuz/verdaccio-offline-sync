@@ -3,7 +3,7 @@ import { createReadStream } from 'fs';
 import { mkdir, rm, copyFile, readFile, writeFile, access } from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
-import tar from 'tar';
+import * as tar from 'tar';
 import { Logger } from '@verdaccio/types';
 import {
   ImportHistoryFile,

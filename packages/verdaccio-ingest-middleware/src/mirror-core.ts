@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'crypto';
 import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { createGunzip } from 'zlib';
-import tar from 'tar';
+import * as tar from 'tar';
 import semver from 'semver';
 
 export const SCOPE = 'verdaccio-artifacts-v2';
@@ -116,7 +116,7 @@ function publicMetadata(raw: any, name: string): any {
 }
 async function tarballIdentity(file:string,artifact:Artifact,maxBytes:number):Promise<void>{
   let found:any, count=0;
-  const parser=new (tar as any).Parse({strict:true,brotli:false,maxMetaEntrySize:1024*1024,onentry:(e:any)=>{
+  const parser=new (tar as any).Parser({strict:true,gzip:false,brotli:false,zstd:false,maxMetaEntrySize:1024*1024,onReadEntry:(e:any)=>{
     const p=e.path.replace(/^(\.\/)+/,'');
     if(p!=='package/package.json'){e.resume();return;}
     if(++count>1||e.type!=='File'||e.size>1024*1024){parser.abort(new Error('Invalid/duplicate package manifest inside tgz'));return;}
@@ -350,7 +350,7 @@ export class MirrorRepository {
   /** Preflight a private stable archive before tar extraction; hardlinks and symlinks are forbidden. */
   private async extract(archive:string,dir:string):Promise<Transfer>{
     const seen=new Set<string>();let bytes=0,entries=0;
-    const parser=new (tar as any).Parse({strict:true,brotli:false,maxMetaEntrySize:1024*1024,onentry:(e:any)=>{
+    const parser=new (tar as any).Parser({strict:true,gzip:false,brotli:false,zstd:false,maxMetaEntrySize:1024*1024,onReadEntry:(e:any)=>{
       try{
         const p=safeRelative(e.path);if(++entries>this.options.maxEntries||seen.has(p))throw new Error('Duplicate archive entry or entry limit');seen.add(p);
         if(e.type!=='File'||(!/^blobs\/[a-f0-9]{64}$/.test(p)&&p!=='.mirror-manifest.json')||e.linkpath)throw new Error('Unexpected archive entry type/path');
@@ -484,7 +484,7 @@ export async function extractLegacyArchive(archive:string,dir:string,limits:Part
   const privateArchive=path.join(dir,'.validated-input.tar.gz');await stableRead(archive,privateArchive);
   const seen=new Set<string>(),files=new Set<string>();let bytes=0,entries=0;
   const normalize=(p:string):string=>p.replace(/^(\.\/)+/,'').replace(/\/$/,'');
-  const parser=new (tar as any).Parse({strict:true,brotli:false,maxMetaEntrySize:1024*1024,onentry:(e:any)=>{
+  const parser=new (tar as any).Parser({strict:true,gzip:false,brotli:false,zstd:false,maxMetaEntrySize:1024*1024,onReadEntry:(e:any)=>{
     try{
       const p=normalize(e.path);
       if(++entries>maxEntries)throw new Error('Legacy archive entry limit');

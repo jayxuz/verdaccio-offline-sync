@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import type { Logger } from '@verdaccio/types';
-import tar from 'tar';
+import * as tar from 'tar';
 
 import { ImportHandler } from '../src/import-handler';
 import type { ExportManifest, ImportProgress } from '../src/types';

@@ -1,9 +1,10 @@
 {
   "name": "@jayxuz/verdaccio-offline-storage",
-  "version": "3.1.8",
+  "version": "3.2.0",
   "description": "Verdaccio storage plugin that treats local package cache as first class citizen for offline environments",
   "main": "build/index.js",
   "types": "build/index.d.ts",
+  "files": ["build", "README.md", "README.zh-CN.md"],
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf build",
@@ -40,7 +41,11 @@
     "node": ">=18.0.0"
   },
   "license": "MIT",
-  "repository": "https://github.com/jayxuz/verdaccio-offline-sync/packages/verdaccio-offline-storage",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jayxuz/verdaccio-offline-sync.git",
+    "directory": "packages/verdaccio-offline-storage"
+  },
   "author": "jayxuz",
-  "homepage": "https://github.com/jayxuz/verdaccio-offline-sync/packages/verdaccio-offline-storage"
+  "homepage": "https://github.com/jayxuz/verdaccio-offline-sync/tree/main/packages/verdaccio-offline-storage"
 }

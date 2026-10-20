@@ -464,11 +464,11 @@ export function getImportUIHTML(config: any): string {
       <div class="form-group">
         <label>导入选项</label>
         <div class="option-row">
-          <label><input type="checkbox" id="overwrite"><span>覆盖已存在的文件</span></label>
-          <button class="help-btn" type="button">?<span class="tooltip">如果目标文件已存在，是否覆盖。默认跳过已存在的文件。</span></button>
+          <label><input type="checkbox" id="overwrite" disabled><span>保留已有文件</span></label>
+          <button class="help-btn" type="button">?<span class="tooltip">内容相同的文件会跳过；同一版本内容不同会中止导入。元数据会合并并保留目标已有值。</span></button>
         </div>
         <div class="option-row">
-          <label><input type="checkbox" id="validateChecksum" checked><span>验证文件校验和</span></label>
+          <label><input type="checkbox" id="validateChecksum" checked disabled><span>始终验证文件校验和</span></label>
           <button class="help-btn" type="button">?<span class="tooltip">导入前验证每个文件的 SHA256 校验和，确保文件完整性。</span></button>
         </div>
         <div class="option-row">
@@ -520,10 +520,10 @@ export function getImportUIHTML(config: any): string {
       <div class="form-group">
         <label>导入选项</label>
         <div class="option-row">
-          <label><input type="checkbox" id="localOverwrite"><span>覆盖已存在的文件</span></label>
+          <label><input type="checkbox" id="localOverwrite" disabled><span>保留已有文件，冲突时中止</span></label>
         </div>
         <div class="option-row">
-          <label><input type="checkbox" id="localValidateChecksum" checked><span>验证文件校验和</span></label>
+          <label><input type="checkbox" id="localValidateChecksum" checked disabled><span>始终验证文件校验和</span></label>
         </div>
         <div class="option-row">
           <label><input type="checkbox" id="localRebuildMetadata" checked><span>自动重建元数据</span></label>

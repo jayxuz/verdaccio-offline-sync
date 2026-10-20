@@ -15,6 +15,8 @@ export interface PlatformConfig {
 export interface IngestConfig {
   enabled: boolean;
   upstreamRegistry?: string;
+  /** 镜像导入后使用的 registry 基址，支持 HTTPS 和反向代理路径前缀。 */
+  mirrorRegistryURL?: string;
   concurrency?: number;
   timeout?: number;
   platforms?: PlatformConfig[];

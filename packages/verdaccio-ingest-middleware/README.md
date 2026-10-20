@@ -8,12 +8,12 @@ A Verdaccio middleware plugin for recursive package ingestion with multi-platfor
 
 - **Recursive Dependency Resolution**: Automatically analyzes and downloads all dependencies of cached packages
 - **Multi-Platform Binary Support**: Downloads platform-specific binaries (linux-x64, win32-x64, darwin-arm64, etc.)
-- **Differential Export**: Export only new/modified packages since last export for efficient offline sync
+- **Mirror Sync v2**: Selects missing artifacts using complete inventories and SHA256, then records verified receipts; legacy v1 export is full-scope
 - **Web UI**: Built-in management interface for easy operation
 - **Metadata Sync UI** (New): Integrated metadata sync card in Web UI, supports syncing all packages metadata from upstream
 - **Single Package Sync** (New): Sync metadata for individual packages, supports scoped packages like `@types/node`
 - **Package List Browsing** (New): View all local packages and sync from the list with one click
-- **Sync Progress Display** (New): Real-time sync progress with processed count, total, and failure statistics
+- **Metadata Refresh Results**: Shows a busy state during refresh, the refreshed package count on completion, and errors on failure
 - **Sibling Version Completion** (New): Automatically downloads the latest patch version within the same minor series and the latest minor version within the same major series for each cached version
 - **Async Task Management**: Long-running operations run in background with progress tracking
 - **Analysis-Confirm-Download Workflow**: Preview what will be downloaded before actually downloading
@@ -22,6 +22,12 @@ A Verdaccio middleware plugin for recursive package ingestion with multi-platfor
 - **Metadata Rebuild & Sync Hardening** (v1.2.5): `/sync` now persists metadata for newly downloaded packages, and `/rebuild-index` can create missing `package.json` and refresh local `dist-tags.latest`
 - **Serialized Manifest Persistence** (v1.2.8): Sync, download, and rebuild metadata is persisted through Verdaccio package storage instead of direct `package.json` writes, preventing concurrent operations from overwriting each other
 - **Platform Package Resolution Fix** (v1.2.9): Correctly resolves Codex platform versions expressed as npm aliases (for example `npm:@openai/codex@0.146.1-win32-x64`), Claude Code standalone platform packages, and tarball versions with multi-part platform suffixes
+
+## Upgrading to 2.0.0
+
+Fixes platform packages repeatedly appearing after download. `/_/ingest/mirror/ui` provides inventory reconciliation, artifact transfers, receipts and saved history. Pair it with healer 2.0.0 and set `mirrorRegistryURL` to the actual registry base URL.
+
+Legacy `/export/*` remains available but `since` no longer filters files: exports are full-scope. Version 2.0.0 requires Node.js ≥22.9.0; mirror writes require Linux and a local POSIX filesystem. See the [migration guide](https://github.com/jayxuz/verdaccio-offline-sync/blob/main/docs/mirror-v2-migration.md).
 
 ## Installation
 
@@ -136,15 +142,15 @@ curl -X POST http://localhost:4873/_/ingest/download \
 ### Export for Offline Transfer
 
 ```bash
-# Preview what will be exported (since last export)
+# Legacy v1: preview the full scope; use /_/ingest/mirror/ui for incremental transfers
 curl -X POST http://localhost:4873/_/ingest/export/preview \
   -H "Content-Type: application/json" \
-  -d '{"since": "last"}'
+  -d '{"includeMetadata": true}'
 
 # Create export package
 curl -X POST http://localhost:4873/_/ingest/export/create \
   -H "Content-Type: application/json" \
-  -d '{"since": "last"}'
+  -d '{"includeMetadata": true}'
 
 # Download the export file
 curl -O http://localhost:4873/_/ingest/export/download/export-xxx
@@ -159,14 +165,14 @@ Access the management interface at `http://localhost:4873/_/ingest/ui` for a vis
 - Download missing packages
 - Create differential exports
 - Monitor task progress
-- Sync all packages metadata (calls `verdaccio-metadata-healer` sync API)
+- Refresh upstream metadata through ingest without enabling healer on the online instance
 - Sync single package metadata with scoped package support
 - Browse local package list and sync from list
-- View sync progress and results
+- View metadata refresh status and results
 
 ## Requirements
 
-- Node.js >= 18.0.0
+- Node.js >= 22.9.0
 - Verdaccio >= 5.0.0
 
 ## License

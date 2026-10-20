@@ -31,7 +31,7 @@ English | [中文](./README.md)
 - **Recursive Dependency Download** - Automatically analyzes and downloads complete dependency trees
 - **Multi-Platform Binary Support** - Supports Linux/Windows/macOS with x64/arm64 architectures
 - **Incremental Sync** - Smart incremental updates based on cached packages
-- **Differential Export/Import** - Supports time-based differential package export and import
+- **Mirror Sync v2** - Exchanges complete inventories, transfers missing artifacts by SHA256, records verified receipts and acknowledgments, and queries saved package/version changes
 - **Visual Management Interface** - Built-in Web UI with analyze-confirm-download workflow
 - **Real-time Progress Tracking** - Displays detailed progress and estimated remaining time
 - **Metadata Self-Healing** - Automatically repairs missing package metadata in offline environments
@@ -44,8 +44,29 @@ English | [中文](./README.md)
 - **Scoped Tarball Filename Compatibility** - Supports both `package-x.y.z.tgz` and `scope-package-x.y.z.tgz` naming styles
 - **Special Platform Package Compatibility** - Supports Codex npm-alias platform versions, Claude Code standalone platform packages, and multi-part version suffixes such as `0.146.1-win32-x64`
 - **Historical Cache Rebuild** - Healer can rebuild metadata and the local package list entirely offline for previously imported or downloaded caches and can be run repeatedly
-- **Integrity Verification** - Auto-validates tarball SHA-1 checksums after download to prevent corrupt packages from polluting local cache; verifies file integrity during local version resolution and auto-removes corrupt files
+- **Integrity Verification** - Auto-validates tarball SHA-1 checksums after download to prevent corrupt packages from polluting local cache; verifies file integrity during local version resolution and excludes checksum failures from returned metadata while preserving the files for inspection and repair
 - **Integrity Check & Repair** - One-click scan for incomplete packages that have metadata but zero tarballs (produced by unconfirmed analysis pre-writes, proxy metadata caching, etc.), smartly selects latest, per-major newest, and dependency-hit versions to re-download, with 404 classification and retry support
+
+## Upgrading to 2.0.0
+
+| Artifact | Version |
+|----------|---------|
+| Docker `jayxuz/verdaccio-offline-sync` | `2.0.0` |
+| `verdaccio-ingest-middleware` | `2.0.0` |
+| `verdaccio-metadata-healer` | `2.0.0` |
+| `@jayxuz/verdaccio-offline-storage` | `3.2.0` |
+
+This release adds bidirectional inventory reconciliation, standard Verdaccio cold-package creation and persistence fixes, recovered installation fields, bounded read caching with optional SQLite persistence, opt-in tag/publication-time preservation, and signing-secret retention across restarts. Platform analysis filters versions already cached locally, fixing [issue #1](https://github.com/jayxuz/verdaccio-offline-sync/issues/1).
+
+Archive, upload and registry-fetch dependencies are upgraded to tar 7, multer 2 and pacote 21; unused arborist is removed. The higher Node.js floor follows pacote 21 runtime requirements. The Docker image includes Node.js 22.21.1.
+
+Dependency audit scope: a standalone production install of the three packages on 2026-10-20 reports 14 affected dependency entries (12 high, 2 moderate, 0 critical) through `npm audit --omit=dev`. Remaining advisories originate in the Verdaccio 6 compatibility adapters and their pinned lodash/glob dependencies. This release retains Verdaccio 6.2.4 compatibility and does not claim that all base dependencies are advisory-free.
+
+**Compatibility changes:** legacy v1 exports remain supported, but `since` (including `last`) no longer filters files: v1 always exports the full scope. Imports always verify SHA256, sizes and archive structure. `validateChecksum: false` cannot bypass validation and `overwrite: true` cannot replace conflicting artifacts. Use v2 inventories for incremental transfers; an export record does not prove target acceptance.
+
+Back up configuration and package storage, upgrade both peers, and preserve each peer's own authentication files and repository identity. Run fresh complete scans and exchange inventories before following the receipt/acknowledgment flow. Never copy authentication databases or `.mirror-sync/repository.json` between peers. See the [migration guide](docs/mirror-v2-migration.md).
+
+Ingest and healer 2.0.0 require Node.js ≥22.9.0; storage 3.2.0 still supports Node.js ≥18. Mirror v2 writes/imports require Linux, a local POSIX filesystem and a shared PID namespace among writers. Persistent read caching requires built-in `node:sqlite`; unsupported runtimes fall back to memory caching. The default metadata policy remains `local-latest`; opt into `preserve` using the [strict policy configuration](docs/strict-metadata-policy.md).
 
 ## Plugin Components
 
@@ -88,7 +109,7 @@ docker run -it --name verdaccio \
   -p 4873:4873 \
   -v $V_PATH/conf:/verdaccio/conf \
   -v $V_PATH/storage:/verdaccio/storage \
-  jayxuz/verdaccio-offline-sync
+  jayxuz/verdaccio-offline-sync:2.0.0
 ```
 
 Directory structure:
@@ -104,9 +125,9 @@ $V_PATH/
 
 #### Build and Publish the Docker Image
 
-Docker tags are read automatically from the root `package.json` version. For example, version `1.2.9` builds and pushes both:
+Docker tags are read automatically from the root `package.json` version. For example, version `2.0.0` builds and pushes both:
 
-- `jayxuz/verdaccio-offline-sync:1.2.9`
+- `jayxuz/verdaccio-offline-sync:2.0.0`
 - `jayxuz/verdaccio-offline-sync:latest`
 
 ```bash
@@ -186,7 +207,7 @@ test "$(rg -c '^    proxy: npmjs$' examples/config-online.yaml)" -eq 2
 test "$(rg -c '^  metadata-healer:$' examples/config-offline.yaml)" -eq 1
 ```
 
-Acceptance rules: the online configuration contains only `ingest-middleware`, uses `offline: false`, and assigns `proxy` to both package rules. The offline configuration contains only the `metadata-healer` filter, uses `offline: true`, and contains no uplink, middleware, or `proxy`.
+Default-example acceptance rules: online uses ingest, `offline: false` and proxy rules; the offline example uses only the healer filter with no uplink, middleware or proxy. These assertions apply to the default examples. Imports, mirror sync and strict metadata preservation require explicitly enabling the offline healer middleware as documented for those features.
 
 ### Storage Manifest Migration and Rollback
 
@@ -379,39 +400,15 @@ Displays locally cached packages:
 - Version count
 - Latest cached version
 
-#### 7. Differential Export (Online)
+#### 7. Mirror Sync and Legacy Full Export
 
-In the "📤 Differential Export" card at the bottom of Web UI:
+Use `/_/ingest/mirror/ui` online and `/_/healer/mirror/ui` offline. The offline middleware requires `enableImportUI: true`.
 
-**Export History:** Shows recent export records
+Scan both peers → exchange inventory JSON → reconcile → export missing artifacts → import and verify at the target → return the receipt → accept it at the source and return the acknowledgment → accept the acknowledgment at the target. Conflicting content for the same package/version blocks the transfer; peer-only artifacts are retained. Reverse peer roles to synchronize in the other direction.
 
-**Base Time Selection:**
-| Option | Description |
-|--------|-------------|
-| Last Export Time | Export only new/modified files since last export |
-| Custom Time | Manually specify base timestamp |
-| Full Export | Export all files regardless of time |
+The original management page retains **Legacy Full Export** for v1 compatibility. It always scans the full scope; last-export and custom timestamps do not filter files. The metadata checkbox controls inclusion of `package.json`. Old export records are history only and do not establish v2 baselines.
 
-**Export Options:**
-- Include metadata files: Whether to include package.json files
-
-**Workflow:**
-```
-Preview changes → View file list → Create export package → Download tar.gz
-```
-
-**Export Package Structure:**
-```
-diff-export-2024-01-15T10-30-00.tar.gz
-├── .export-manifest.json      # Export manifest (file list and checksums)
-├── react/
-│   ├── package.json
-│   └── react-18.2.0.tgz
-├── @esbuild%2flinux-x64/
-│   └── linux-x64-0.19.0.tgz
-└── lodash/
-    └── lodash-4.17.21.tgz
-```
+v1 archives contain `.export-manifest.json` and package directories (including nested `@scope/name/`). v2 archives contain `.mirror-manifest.json` and SHA256-addressed `blobs/`; import them through the mirror UI.
 
 #### 8. Differential Import (Offline)
 
@@ -424,8 +421,8 @@ Access `http://internal:4873/_/healer/ui` to open the import management interfac
 **Import Options:**
 | Option | Description |
 |--------|-------------|
-| Overwrite Existing Files | Overwrite if target file exists (default: skip) |
-| Validate Checksums | Verify SHA256 checksums before import |
+| Existing Files | Skip identical artifacts; reject same-version content conflicts; merge metadata while preserving target-owned values |
+| Validate Checksums | Mandatory SHA256, size and archive preflight validation; cannot be disabled |
 | Auto Rebuild Metadata | Trigger metadata rebuild after import |
 
 **Import Progress Phases:**
@@ -450,7 +447,7 @@ For packages that were imported or downloaded previously but never appeared in t
 │  │  ├── View cache status                                      │   │
 │  │  ├── Analyze deps → Confirm download list → Execute         │   │
 │  │  ├── Real-time progress (percentage, ETA, current package)  │   │
-│  │  └── 📤 Differential export (time-based incremental)        │   │
+│  │  └── 📤 Mirror sync (inventory-based missing artifacts)        │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │                              │                                      │
 │                              ▼                                      │
@@ -526,6 +523,20 @@ For packages that were imported or downloaded previously but never appeared in t
 | `/_/healer/sync-all` | POST | Sync metadata for all local packages |
 | `/_/healer/sync/status/:taskId` | GET | Query sync task status |
 | `/_/healer/packages` | GET | List all local packages |
+
+### Mirror API
+
+Prefixes are `/_/ingest/mirror` online and `/_/healer/mirror` offline.
+
+| Method | Paths | Purpose |
+|--------|-------|---------|
+| GET | `/ui`, `/status`, `/snapshots`, `/snapshots/:id` | UI, repository status and saved inventories |
+| POST | `/scan`, `/plan`, `/export` | Scan, reconcile and export |
+| GET | `/archives/:id`, `/changes` | Download archives and query changes |
+| POST | `/import`, `/receipt`, `/ack` | Raw archive upload, receipt and acknowledgment |
+| POST | `/rebuild-history-index` | Rebuild history from saved successful scans |
+
+See the [protocol guide](docs/mirror-v2-migration.md) for payloads and recovery.
 
 ### API Examples
 
@@ -605,49 +616,20 @@ curl -X POST http://external:4873/_/ingest/download \
 
 ## Sync Workflows
 
-### Method 1: Direct rsync Sync
+### Recommended: Mirror Sync v2
 
-```bash
-# 1. Online: Open Web UI for sync
-#    Visit http://external:4873/_/ingest/ui
-#    Select platforms → Analyze deps → Confirm → Download
+1. Analyze and download missing dependencies through the online `/_/ingest/ui`. Cached platform versions are omitted from the download list.
+2. Open each peer's mirror UI, run a complete scan and download its inventory JSON.
+3. Reconcile the target inventory at the source and export the missing artifacts after resolving any conflicts.
+4. Transfer the archive to the target, import and verify it, then download the receipt.
+5. Return the receipt to the source, accept it and download the acknowledgment; return that acknowledgment to the target and accept it.
+6. Download/install from the target registry. Swap peer roles for reverse synchronization.
 
-# 2. Differential sync to offline
-rsync -avz --ignore-existing /external/storage/ /internal/storage/
+Exchange fresh complete inventories on first migration or after a broken chain. History reports changes observed between saved successful scans, not exact filesystem state at arbitrary times.
 
-# 3. Offline: Rebuild index (first time or if issues)
-curl -X POST http://internal:4873/_/ingest/rebuild-index
+### Compatibility: v1 Full Archives
 
-# 4. Offline: Normal usage
-npm install <package> --registry http://internal:4873
-```
-
-### Method 2: Differential Package Export/Import (Recommended)
-
-For scenarios where direct rsync is not possible (e.g., USB transfer).
-
-```bash
-# 1. Online: Open Web UI
-#    Visit http://external:4873/_/ingest/ui
-
-# 2. Online: Download dependencies (same as Method 1)
-#    Select platforms → Analyze deps → Confirm → Download
-
-# 3. Online: Create differential export package
-#    In "📤 Differential Export" card:
-#    Select base time → Preview changes → Create export → Download
-
-# 4. Transfer diff-export-xxx.tar.gz to offline environment
-
-# 5. Offline: Open import Web UI
-#    Visit http://internal:4873/_/healer/ui
-
-# 6. Offline: Upload and import differential package
-#    Drag-drop upload → Select import options → Start import
-
-# 7. Offline: Normal usage
-npm install <package> --registry http://internal:4873
-```
+Preview, create and download an archive through Legacy Full Export, then import it at the offline `/_/healer/ui`. v1 does not generate v2 receipts or establish a common baseline. Switch to v2 for subsequent incremental transfers. Do not overwrite authentication databases, repository identity or transfer journals by copying whole storage directories.
 
 ### Command Line Method
 

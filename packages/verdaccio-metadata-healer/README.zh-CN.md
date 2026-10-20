@@ -14,7 +14,7 @@
 - **Tarball 扫描**：扫描存储目录中的 `.tgz` 文件并提取元数据
 - **SHA 校验和缓存**：缓存计算的校验和以提高性能
 - **自动更新 Latest 标签**：自动将 `dist-tags.latest` 更新为最高可用版本
-- **非破坏性**：即时修复元数据，不修改原始文件
+- **存储协调写入**：修复和导入通过存储接口持久化；保留目标已有字段，不覆盖冲突制品
 - **元数据同步**（新增）：从上游仓库同步包元数据到本地存储，支持单包和批量同步
 - **Scoped 包支持**（新增）：优化包名提取逻辑，支持 `@scope/package` 嵌套目录结构
 - **存储访问修复**：修复包存储获取方式，使用 `_getLocalStorage` 替代 `getPackageStorage` 以正确获取存储实例
@@ -32,6 +32,12 @@
 - **校验和验证**：导入时验证文件完整性
 - **导入历史**：跟踪所有导入操作
 - **10GB 上传限制**（新增）：文件上传大小限制从 2GB 提升至 10GB
+
+## 2.0.0 升级
+
+`/_/healer/mirror/ui` 新增双向镜像同步、验证回执和版本历史查询；需 `middlewares.metadata-healer.enableImportUI: true`，并设置实际 `mirrorRegistryURL`。v1 导入继续兼容，但不再允许关闭校验或覆盖同版本异内容的制品；重复导入也会修复并注册元数据。恢复 `exports`、`type`、平台及生命周期等安装字段，保留目标字段与标签，不执行包脚本。
+
+保留原始标签和发布时间时，与 storage 3.2.0 同时配置 `metadataPolicy: preserve`；仅从 tgz 重建的版本不会编造发布时间。2.0.0 要求 Node.js ≥22.9.0，镜像写入要求 Linux 本地 POSIX 文件系统。详见 [迁移指南](https://github.com/jayxuz/verdaccio-offline-sync/blob/main/docs/mirror-v2-migration.md) 和 [严格保留配置](https://github.com/jayxuz/verdaccio-offline-sync/blob/main/docs/strict-metadata-policy.md)。
 
 ## 安装
 
@@ -161,9 +167,9 @@ curl http://localhost:4873/_/healer/import/history
 
 | 选项 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
-| `overwrite` | boolean | false | 覆盖已存在的文件 |
+| `overwrite` | boolean | false | 兼容参数；相同制品跳过，冲突制品始终拒绝覆盖 |
 | `rebuildMetadata` | boolean | true | 导入后重建包元数据 |
-| `validateChecksum` | boolean | true | 验证文件校验和 |
+| `validateChecksum` | boolean | true | 兼容参数；始终验证 SHA256、大小和归档结构 |
 
 ### 从本地路径导入
 
@@ -237,7 +243,7 @@ curl http://localhost:4873/_/healer/rebuild/status/rebuild-xxx
 
 ## 系统要求
 
-- Node.js >= 18.0.0
+- Node.js >= 22.9.0
 - Verdaccio >= 5.0.0
 
 ## 许可证

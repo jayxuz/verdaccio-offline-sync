@@ -6,7 +6,7 @@ import { createHash } from 'crypto';
 import { pipeline } from 'stream/promises';
 import { createGzip, createGunzip } from 'zlib';
 import pLimit from 'p-limit';
-import tar from 'tar';
+import * as tar from 'tar';
 import { Logger } from '@verdaccio/types';
 import {
   ScannedFile,

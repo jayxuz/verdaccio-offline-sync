@@ -31,7 +31,7 @@
 - **递归依赖下载** - 自动分析并下载完整的依赖树
 - **多平台二进制支持** - 支持 Linux/Windows/macOS 的 x64/arm64 架构
 - **增量同步** - 基于已缓存包的智能增量更新
-- **差分导出/导入** - 支持基于时间点的差分包导出和内网导入
+- **双向镜像同步 v2** - 交换完整库存，按实际制品的 SHA256 生成差异包，以验证回执和确认记录共同基线；支持包版本变化查询
 - **可视化管理界面** - 内置 Web UI，支持分析-确认-下载工作流
 - **实时进度追踪** - 显示详细进度、预估剩余时间
 - **元数据自愈** - 内网自动修复缺失的包元数据
@@ -44,8 +44,29 @@
 - **Scoped 包文件名兼容** - 同时兼容 `package-x.y.z.tgz` 与 `scope-package-x.y.z.tgz` 两种 tarball 命名
 - **特殊平台包兼容** - 支持 Codex 的 npm alias 平台版本和 Claude Code 独立平台包，并识别 `0.146.1-win32-x64` 等多段版本后缀
 - **历史缓存重建** - healer 可完全离线重建已经导入或下载的缓存元数据与本地包列表，并支持重复执行
-- **完整性校验** - 下载后自动校验 tarball SHA-1，防止损坏包污染本地缓存；本地版本解析时同步校验文件完整性，自动剔除损坏文件
+- **完整性校验** - 下载后自动校验 tarball SHA-1，防止损坏包污染本地缓存；本地版本解析时同步校验文件完整性，从返回元数据中排除校验失败的版本，保留原文件供检查或修复
 - **完整性检查与修复** - 一键扫描"有元数据但零 tarball"的残缺包（analyze 预写元数据未确认下载、代理元数据缓存等场景产生），智能选取 latest、各大版本最新及被本地依赖命中的版本补下载，404 版本自动分类且支持失败重试
+
+## 2.0.0 升级说明
+
+| 发布物 | 版本 |
+|--------|------|
+| Docker 镜像 `jayxuz/verdaccio-offline-sync` | `2.0.0` |
+| `verdaccio-ingest-middleware` | `2.0.0` |
+| `verdaccio-metadata-healer` | `2.0.0` |
+| `@jayxuz/verdaccio-offline-storage` | `3.2.0` |
+
+本版包含双向镜像同步、标准 Verdaccio 存储的冷包创建与元数据持久化修复、模块安装字段恢复、有界读取缓存和可选 SQLite 持久索引、严格标签与发布时间保留，以及认证密钥跨重启保持。平台包分析会过滤本地已有版本，修复 [issue #1](https://github.com/jayxuz/verdaccio-offline-sync/issues/1) 的重复待下载问题。
+
+本版将归档、上传及上游抓取依赖更新到 tar 7、multer 2 和 pacote 21，并移除未使用的 arborist。pacote 21 的运行时要求是摄取和修复插件提高 Node.js 下限的原因；Docker 镜像内置 Node.js 22.21.1。
+
+依赖审计范围：2026-10-20 独立安装三个生产包后的 `npm audit --omit=dev` 报告包含 14 个受影响依赖条目（12 高、2 中、0 严重），剩余告警来自 Verdaccio 6 兼容层及其固定的 lodash、glob 等传递依赖。本版保持 Verdaccio 6.2.4 兼容，不宣称整个基础依赖树已消除全部告警。
+
+**兼容性变化：**旧 v1 导出接口仍可用，但 `since`（包括 `last`）不再裁剪文件，始终导出完整范围；导入始终验证 SHA256 和大小，`validateChecksum: false` 不再跳过校验，`overwrite: true` 不会覆盖冲突制品。需要增量传输时请使用 v2 库存对账，不能把旧导出历史当作目标已接收的证明。
+
+升级时先备份原配置和包存储，升级同步两端，并保留各自认证文件及仓库身份。进入两端镜像页面重新完整扫描、交换库存，再按回执流程同步。不要把一端的认证数据库或 `.mirror-sync/repository.json` 复制到另一端。详细步骤见 [v2 迁移文档](docs/mirror-v2-migration.md)。
+
+摄取和修复插件 2.0.0 要求 Node.js ≥22.9.0，存储插件 3.2.0 仍支持 Node.js ≥18；v2 写入和导入要求 Linux 本地 POSIX 文件系统及同一 PID 命名空间。SQLite 持久读取缓存需要运行时内置 `node:sqlite`，不支持时回退内存缓存。`metadataPolicy` 默认仍为 `local-latest`；需要保留原始标签和发布时间时，按 [严格保留配置](docs/strict-metadata-policy.md) 显式启用 `preserve`。
 
 ## 插件组成
 
@@ -89,7 +110,7 @@ docker run -it --name verdaccio \
   -p 4873:4873 \
   -v $V_PATH/conf:/verdaccio/conf \
   -v $V_PATH/storage:/verdaccio/storage \
-  jayxuz/verdaccio-offline-sync
+  jayxuz/verdaccio-offline-sync:2.0.0
 ```
 
 目录结构：
@@ -105,9 +126,9 @@ $V_PATH/
 
 #### 构建并发布 Docker 镜像
 
-Docker 标签自动读取根目录 `package.json` 的 `version`。例如当前版本 `1.2.9` 会同时构建并推送：
+Docker 标签自动读取根目录 `package.json` 的 `version`。例如当前版本 `2.0.0` 会同时构建并推送：
 
-- `jayxuz/verdaccio-offline-sync:1.2.9`
+- `jayxuz/verdaccio-offline-sync:2.0.0`
 - `jayxuz/verdaccio-offline-sync:latest`
 
 ```bash
@@ -187,7 +208,7 @@ test "$(rg -c '^    proxy: npmjs$' examples/config-online.yaml)" -eq 2
 test "$(rg -c '^  metadata-healer:$' examples/config-offline.yaml)" -eq 1
 ```
 
-验收规则：在线配置只能出现 `ingest-middleware`，必须是 `offline: false`，并为两类包规则设置 `proxy`；离线配置只能出现 filter 下的 `metadata-healer`，必须是 `offline: true`，且不能含 uplink、任何 middleware 或任何 `proxy`。
+默认示例验收规则：在线配置只能出现 `ingest-middleware`，必须是 `offline: false`，并为两类包规则设置 `proxy`；离线示例仅启用 healer filter，不包含 uplink、middleware 或 `proxy`。这些断言仅适用于默认示例；使用导入、镜像同步或严格保留模式时，应按相应文档显式启用离线 healer middleware。
 
 ### 存储清单迁移与回滚
 
@@ -380,39 +401,15 @@ find "$STORAGE_DIR" -type f -name package.json -exec jq -e empty {} +
 - 版本数量
 - 最新缓存版本
 
-#### 7. 差分导出（外网）
+#### 7. 双向镜像同步与旧格式导出
 
-在 Web UI 底部的「📤 差分导出」卡片中：
+增量同步入口：外网 `/_/ingest/mirror/ui`，内网 `/_/healer/mirror/ui`。内网须显式配置 `middlewares.metadata-healer.enableImportUI: true`。
 
-**导出历史：** 显示最近的导出记录
+完整扫描两端 → 下载并交换库存 JSON → 对账 → 导出目标缺失制品 → 目标导入验证 → 返回回执 → 源端接收回执并返回确认 → 目标接收确认。同包同版本内容不一致时中止导出或导入，双方独有制品保留。反向同步时交换源端和目标端角色。
 
-**基准时间选择：**
-| 选项 | 说明 |
-|------|------|
-| 上次导出时间 | 从上次导出时间点开始，只导出新增或修改的文件 |
-| 自定义时间 | 手动指定基准时间点 |
-| 全量导出 | 导出所有文件，不考虑时间点 |
+原管理页面底部保留“旧格式完整导出”，用于兼容 v1 导入。该入口始终完整扫描，不按上次导出时间或自定义时间筛选。“包含元数据文件”控制是否附带 `package.json`；旧导出记录仅用于追溯，不建立 v2 共同基线。
 
-**导出选项：**
-- 包含元数据文件：是否包含 package.json 文件
-
-**工作流程：**
-```
-预览变更 → 查看待导出文件列表 → 创建导出包 → 下载 tar.gz
-```
-
-**导出包结构：**
-```
-diff-export-2024-01-15T10-30-00.tar.gz
-├── .export-manifest.json      # 导出清单（包含文件列表和校验和）
-├── react/
-│   ├── package.json
-│   └── react-18.2.0.tgz
-├── @esbuild%2flinux-x64/
-│   └── linux-x64-0.19.0.tgz
-└── lodash/
-    └── lodash-4.17.21.tgz
-```
+v1 包包含 `.export-manifest.json` 和包目录下的元数据、tgz；scoped 包使用 `@scope/name/` 嵌套目录。v2 包包含 `.mirror-manifest.json` 和按 SHA256 命名的 `blobs/`，必须通过镜像同步页面导入。
 
 #### 8. 差分导入（内网）
 
@@ -425,8 +422,8 @@ diff-export-2024-01-15T10-30-00.tar.gz
 **导入选项：**
 | 选项 | 说明 |
 |------|------|
-| 覆盖已存在的文件 | 如果目标文件已存在，是否覆盖（默认跳过） |
-| 验证文件校验和 | 导入前验证 SHA256 校验和，确保文件完整性 |
+| 已有文件 | 内容相同则跳过，同版本内容冲突时中止；元数据合并并保留目标已有值 |
+| 验证文件校验和 | 始终执行 SHA256、大小及归档预检，不能关闭 |
 | 自动重建元数据 | 导入后触发元数据重建，使新包立即可用 |
 
 **导入进度阶段：**
@@ -451,7 +448,7 @@ diff-export-2024-01-15T10-30-00.tar.gz
 │  │  ├── 缓存状态查看                                            │   │
 │  │  ├── 分析依赖 → 确认下载列表 → 执行下载                       │   │
 │  │  ├── 实时进度追踪（百分比、预估时间、当前包）                  │   │
-│  │  └── 📤 差分导出（基于时间点导出增量包）                      │   │
+│  │  └── 📤 镜像同步（库存对账与差异制品）                        │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │                              │                                      │
 │                              ▼                                      │
@@ -527,6 +524,20 @@ diff-export-2024-01-15T10-30-00.tar.gz
 | `/_/healer/sync-all` | POST | 同步所有本地包的元数据 |
 | `/_/healer/sync/status/:taskId` | GET | 查询同步任务状态 |
 | `/_/healer/packages` | GET | 列出所有本地包 |
+
+### 双向镜像 API
+
+下表中的前缀在外网为 `/_/ingest/mirror`，内网为 `/_/healer/mirror`。
+
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| GET | `/ui`、`/status`、`/snapshots`、`/snapshots/:id` | 页面、仓库状态和已保存库存 |
+| POST | `/scan`、`/plan`、`/export` | 扫描、对账、导出 |
+| GET | `/archives/:id`、`/changes` | 下载差异包、查询版本变化 |
+| POST | `/import`、`/receipt`、`/ack` | 原始归档上传、接收回执、接收确认 |
+| POST | `/rebuild-history-index` | 从保存的成功快照重建历史索引 |
+
+具体数据格式及恢复步骤见 [协议文档](docs/mirror-v2-migration.md)。
 
 ### API 示例
 
@@ -606,49 +617,20 @@ curl -X POST http://external:4873/_/ingest/download \
 
 ## 同步工作流
 
-### 方式一：rsync 直接同步
+### 推荐：双向镜像同步 v2
 
-```bash
-# 1. 外网：打开 Web UI 进行同步
-#    访问 http://external:4873/_/ingest/ui
-#    选择目标平台 → 分析依赖 → 确认下载 → 执行下载
+1. 外网通过 `/_/ingest/ui` 分析并下载缺失依赖；已有平台包不会重复列入下载列表。
+2. 两端分别打开镜像页面，完整扫描并下载本端库存 JSON。
+3. 源端加载目标库存并对账；确认无冲突后导出差异包。
+4. 将差异包传到目标，在目标镜像页面导入并验证，下载验证回执。
+5. 将回执带回源端，接收回执并下载确认 JSON，再带回目标接收确认。
+6. 从目标 registry 下载和安装所需包；若目标也有源端缺少的包，交换角色反向同步。
 
-# 2. 差分同步到内网
-rsync -avz --ignore-existing /external/storage/ /internal/storage/
+首次迁移或同步链断开时重新交换完整库存。历史查询只表示两次已保存成功扫描之间观察到的变化，不表示任意时刻的文件系统快照。
 
-# 3. 内网：重建索引（首次或有问题时）
-curl -X POST http://internal:4873/_/ingest/rebuild-index
+### 兼容：v1 完整包导出和导入
 
-# 4. 内网：正常使用
-npm install <package> --registry http://internal:4873
-```
-
-### 方式二：差分包导出/导入（推荐）
-
-适用于无法直接 rsync 的场景（如通过 U 盘传输）。
-
-```bash
-# 1. 外网：打开 Web UI
-#    访问 http://external:4873/_/ingest/ui
-
-# 2. 外网：下载依赖（同方式一）
-#    选择目标平台 → 分析依赖 → 确认下载 → 执行下载
-
-# 3. 外网：创建差分导出包
-#    在「📤 差分导出」卡片中：
-#    选择基准时间（上次导出/自定义/全量）→ 预览变更 → 创建导出包 → 下载
-
-# 4. 将 diff-export-xxx.tar.gz 传输到内网
-
-# 5. 内网：打开导入 Web UI
-#    访问 http://internal:4873/_/healer/ui
-
-# 6. 内网：上传并导入差分包
-#    拖拽上传 → 选择导入选项 → 开始导入
-
-# 7. 内网：正常使用
-npm install <package> --registry http://internal:4873
-```
+外网在“旧格式完整导出”中预览、创建并下载归档，传入内网 `/_/healer/ui` 导入。v1 归档不产生 v2 回执，也不建立共同基线；后续需增量同步时转用 v2。不要使用整目录复制覆盖认证数据库、仓库身份或同步日志。
 
 ### 命令行方式
 

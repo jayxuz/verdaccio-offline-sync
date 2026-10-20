@@ -8,12 +8,12 @@
 
 - **递归依赖解析**：自动分析并下载已缓存包的所有依赖
 - **多平台二进制支持**：下载特定平台的二进制文件（linux-x64、win32-x64、darwin-arm64 等）
-- **差分导出**：仅导出自上次导出以来新增/修改的包，实现高效的离线同步
+- **双向镜像同步 v2**：按两端完整库存和 SHA256 选择缺失制品，验证回执后建立共同基线；旧 v1 导出保留为完整导出
 - **Web 管理界面**：内置管理界面，操作简便
 - **元数据同步界面**（新增）：在 Web UI 中集成元数据同步卡片，支持从上游同步所有包元数据
 - **单包同步**（新增）：支持同步单个包的元数据，支持 scoped 包如 `@types/node`
 - **包列表浏览**（新增）：查看所有本地包并支持一键从列表同步
-- **同步进度展示**（新增）：实时显示同步进度，包括已处理数量、总数量、失败数量等统计
+- **元数据刷新结果**：刷新期间显示忙碌状态，完成后显示刷新包数，失败时显示错误
 - **同级版本补全**（新增）：对每个已缓存的版本，自动下载同 minor 系列的最新 patch 版本和同 major 系列的最新 minor 版本
 - **异步任务管理**：长时间运行的操作在后台执行，支持进度跟踪
 - **分析-确认-下载工作流**：在实际下载前预览将要下载的内容
@@ -22,6 +22,12 @@
 - **元数据同步与重建增强**（v1.2.5）：`/sync` 会保存新下载包的元数据，`/rebuild-index` 支持创建缺失的 `package.json` 并刷新本地 `dist-tags.latest`
 - **清单串行持久化**（v1.2.8）：同步、下载和重建产生的元数据统一通过 Verdaccio package storage 持久化，不再直接写入 `package.json`，避免并发操作相互覆盖
 - **平台包解析修复**（v1.2.9）：正确解析 npm alias 形式的 Codex 平台版本（如 `npm:@openai/codex@0.146.1-win32-x64`）和 Claude Code 独立平台包，并识别带多段平台后缀的 tarball 版本
+
+## 2.0.0 升级
+
+修复平台包下载后反复出现在待下载列表的问题。`/_/ingest/mirror/ui` 提供库存对账、差异制品、回执和历史查询；与离线侧 2.0.0 healer 配套使用。设置 `mirrorRegistryURL` 为实际访问的 registry 基址。
+
+旧 `/export/*` 接口仍可用，但 `since` 不再筛选文件，始终完整导出。2.0.0 要求 Node.js ≥22.9.0，镜像写入需要 Linux 本地 POSIX 文件系统。完整流程和限制见 [迁移指南](https://github.com/jayxuz/verdaccio-offline-sync/blob/main/docs/mirror-v2-migration.md)。
 
 ## 安装
 
@@ -136,15 +142,15 @@ curl -X POST http://localhost:4873/_/ingest/download \
 ### 导出用于离线传输
 
 ```bash
-# 预览将要导出的内容（自上次导出以来）
+# 旧 v1 兼容入口：预览完整缓存；增量传输请使用 /_/ingest/mirror/ui
 curl -X POST http://localhost:4873/_/ingest/export/preview \
   -H "Content-Type: application/json" \
-  -d '{"since": "last"}'
+  -d '{"includeMetadata": true}'
 
 # 创建导出包
 curl -X POST http://localhost:4873/_/ingest/export/create \
   -H "Content-Type: application/json" \
-  -d '{"since": "last"}'
+  -d '{"includeMetadata": true}'
 
 # 下载导出文件
 curl -O http://localhost:4873/_/ingest/export/download/export-xxx
@@ -159,14 +165,14 @@ curl -O http://localhost:4873/_/ingest/export/download/export-xxx
 - 下载缺失的包
 - 创建差分导出
 - 监控任务进度
-- 同步所有包元数据（调用 `verdaccio-metadata-healer` 同步 API）
+- 通过在线摄取插件刷新包元数据，无需在在线实例启用 healer
 - 同步单个包元数据，支持 scoped 包
 - 浏览本地包列表并从列表一键同步
-- 查看同步进度和结果
+- 查看元数据刷新状态和结果
 
 ## 系统要求
 
-- Node.js >= 18.0.0
+- Node.js >= 22.9.0
 - Verdaccio >= 5.0.0
 
 ## 许可证

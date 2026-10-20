@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { fork } from 'node:child_process';
-import tar from 'tar';
+import * as tar from 'tar';
 import { OfflinePackageStorage } from '../../verdaccio-offline-storage/src/OfflinePackageStorage';
 import { getReadCacheManager } from '../../verdaccio-offline-storage/src/read-cache';
 import { MetadataPatcher } from '../src/metadata-patcher';
