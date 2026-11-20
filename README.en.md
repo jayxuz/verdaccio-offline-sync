@@ -47,6 +47,10 @@ English | [中文](./README.md)
 - **Integrity Verification** - Auto-validates tarball SHA-1 checksums after download to prevent corrupt packages from polluting local cache; verifies file integrity during local version resolution and excludes checksum failures from returned metadata while preserving the files for inspection and repair
 - **Integrity Check & Repair** - One-click scan for incomplete packages that have metadata but zero tarballs (produced by unconfirmed analysis pre-writes, proxy metadata caching, etc.), smartly selects latest, per-major newest, and dependency-hit versions to re-download, with 404 classification and retry support
 
+## Docker image 2.0.1
+
+`jayxuz/verdaccio-offline-sync:2.0.1` (`linux/amd64`) includes ingest middleware 2.0.1. In the V2 management UI, **Export V1-Compatible Package** creates an archive of npm `.tgz` files and the V1 export manifest. Each target starts with a full export. After an administrator confirms the entire import, subsequent exports include only new versions. Legacy requests with `since` (including `last`) still export the full scope. [V1-compatible export guide](docs/v2-v1-compatible-nexus-export.md)
+
 ## Upgrading to 2.0.0
 
 | Artifact | Version |
@@ -62,7 +66,7 @@ Archive, upload and registry-fetch dependencies are upgraded to tar 7, multer 2 
 
 Dependency audit scope: a standalone production install of the three packages on 2026-10-20 reports 14 affected dependency entries (12 high, 2 moderate, 0 critical) through `npm audit --omit=dev`. Remaining advisories originate in the Verdaccio 6 compatibility adapters and their pinned lodash/glob dependencies. This release retains Verdaccio 6.2.4 compatibility and does not claim that all base dependencies are advisory-free.
 
-Legacy requests with `since` (including `last`) still export the full scope. In V2, choose **Export V1-Compatible Package** for one-way incremental delivery to an offline npm registry. Legacy imports continue to validate SHA256, size, and archive structure and reject conflicting artifacts. [V1-compatible export guide](docs/v2-v1-compatible-nexus-export.md)
+Legacy imports validate SHA256, size, and archive structure and reject conflicting artifacts.
 
 Back up configuration and package storage, upgrade both peers, and preserve each peer's own authentication files and repository identity. Run fresh complete scans and exchange inventories before following the receipt/acknowledgment flow. Never copy authentication databases or `.mirror-sync/repository.json` between peers. See the [migration guide](docs/mirror-v2-migration.md).
 
@@ -109,7 +113,7 @@ docker run -it --name verdaccio \
   -p 4873:4873 \
   -v $V_PATH/conf:/verdaccio/conf \
   -v $V_PATH/storage:/verdaccio/storage \
-  jayxuz/verdaccio-offline-sync:2.0.0
+  jayxuz/verdaccio-offline-sync:2.0.1
 ```
 
 Directory structure:
@@ -125,10 +129,7 @@ $V_PATH/
 
 #### Build and Publish the Docker Image
 
-Docker tags are read automatically from the root `package.json` version. For example, version `2.0.0` builds and pushes both:
-
-- `jayxuz/verdaccio-offline-sync:2.0.0`
-- `jayxuz/verdaccio-offline-sync:latest`
+The scripts below publish both the version from the root `package.json` and `latest`. For a feature-branch build, use the same Dockerfile to build and push the specific version tag directly.
 
 ```bash
 # Sign in to Docker Hub before the first publish

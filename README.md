@@ -47,6 +47,10 @@
 - **完整性校验** - 下载后自动校验 tarball SHA-1，防止损坏包污染本地缓存；本地版本解析时同步校验文件完整性，从返回元数据中排除校验失败的版本，保留原文件供检查或修复
 - **完整性检查与修复** - 一键扫描"有元数据但零 tarball"的残缺包（analyze 预写元数据未确认下载、代理元数据缓存等场景产生），智能选取 latest、各大版本最新及被本地依赖命中的版本补下载，404 版本自动分类且支持失败重试
 
+## 2.0.1 Docker 镜像
+
+`jayxuz/verdaccio-offline-sync:2.0.1`（`linux/amd64`）内含摄取插件 2.0.1。V2 管理页新增「导出 V1 兼容包」，归档包含 npm `.tgz` 和 V1 导出清单。每个目标首次全量，管理员确认整批导入后，后续仅导出新增版本。旧客户端的 `since`（包括 `last`）仍导出完整范围。[V1 兼容包导出指南](docs/v2-v1-compatible-nexus-export.md)
+
 ## 2.0.0 升级说明
 
 | 发布物 | 版本 |
@@ -62,7 +66,7 @@
 
 依赖审计范围：2026-10-20 独立安装三个生产包后的 `npm audit --omit=dev` 报告包含 14 个受影响依赖条目（12 高、2 中、0 严重），剩余告警来自 Verdaccio 6 兼容层及其固定的 lodash、glob 等传递依赖。本版保持 Verdaccio 6.2.4 兼容，不宣称整个基础依赖树已消除全部告警。
 
-旧客户端的 `since`（包括 `last`）仍导出完整范围。V2 的「导出 V1 兼容包」支持向离线 npm 仓库单向交付增量。旧格式导入继续验证 SHA256 和大小，并拒绝覆盖同版本的冲突制品。[V1 兼容包导出指南](docs/v2-v1-compatible-nexus-export.md)
+旧格式导入验证 SHA256 和大小，并拒绝覆盖同版本的冲突制品。
 
 升级时先备份原配置和包存储，升级同步两端，并保留各自认证文件及仓库身份。进入两端镜像页面重新完整扫描、交换库存，再按回执流程同步。不要把一端的认证数据库或 `.mirror-sync/repository.json` 复制到另一端。详细步骤见 [v2 迁移文档](docs/mirror-v2-migration.md)。
 
@@ -110,7 +114,7 @@ docker run -it --name verdaccio \
   -p 4873:4873 \
   -v $V_PATH/conf:/verdaccio/conf \
   -v $V_PATH/storage:/verdaccio/storage \
-  jayxuz/verdaccio-offline-sync:2.0.0
+  jayxuz/verdaccio-offline-sync:2.0.1
 ```
 
 目录结构：
@@ -126,10 +130,7 @@ $V_PATH/
 
 #### 构建并发布 Docker 镜像
 
-Docker 标签自动读取根目录 `package.json` 的 `version`。例如当前版本 `2.0.0` 会同时构建并推送：
-
-- `jayxuz/verdaccio-offline-sync:2.0.0`
-- `jayxuz/verdaccio-offline-sync:latest`
+下列发布脚本会按根目录 `package.json` 的 `version` 发布具体版本和 `latest`。从功能分支发布时，请直接用同一个 Dockerfile 构建并推送所需的具体版本标签。
 
 ```bash
 # 首次发布前登录 Docker Hub
