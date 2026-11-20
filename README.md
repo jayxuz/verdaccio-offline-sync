@@ -62,7 +62,7 @@
 
 依赖审计范围：2026-10-20 独立安装三个生产包后的 `npm audit --omit=dev` 报告包含 14 个受影响依赖条目（12 高、2 中、0 严重），剩余告警来自 Verdaccio 6 兼容层及其固定的 lodash、glob 等传递依赖。本版保持 Verdaccio 6.2.4 兼容，不宣称整个基础依赖树已消除全部告警。
 
-**兼容性变化：**旧 v1 导出接口仍可用，但 `since`（包括 `last`）不再裁剪文件，始终导出完整范围；导入始终验证 SHA256 和大小，`validateChecksum: false` 不再跳过校验，`overwrite: true` 不会覆盖冲突制品。需要增量传输时请使用 v2 库存对账，不能把旧导出历史当作目标已接收的证明。
+旧客户端的 `since`（包括 `last`）仍导出完整范围。对 Nexus 的单向交付可在 V2 选择 V1 格式快照增量。旧格式导入继续验证 SHA256 和大小，并拒绝覆盖同版本的冲突制品。[单向增量导出指南](docs/v2-v1-compatible-nexus-export.md)
 
 升级时先备份原配置和包存储，升级同步两端，并保留各自认证文件及仓库身份。进入两端镜像页面重新完整扫描、交换库存，再按回执流程同步。不要把一端的认证数据库或 `.mirror-sync/repository.json` 复制到另一端。详细步骤见 [v2 迁移文档](docs/mirror-v2-migration.md)。
 
@@ -407,7 +407,7 @@ find "$STORAGE_DIR" -type f -name package.json -exec jq -e empty {} +
 
 完整扫描两端 → 下载并交换库存 JSON → 对账 → 导出目标缺失制品 → 目标导入验证 → 返回回执 → 源端接收回执并返回确认 → 目标接收确认。同包同版本内容不一致时中止导出或导入，双方独有制品保留。反向同步时交换源端和目标端角色。
 
-原管理页面底部保留“旧格式完整导出”，用于兼容 v1 导入。该入口始终完整扫描，不按上次导出时间或自定义时间筛选。“包含元数据文件”控制是否附带 `package.json`；旧导出记录仅用于追溯，不建立 v2 共同基线。
+原管理页的「V1 兼容归档」默认全量导出，可选择附带 `package.json`。对 Nexus 的单向交付，启用管理员名单后选择「单向增量到 Nexus（仅 tgz）」。每个目标首次全量导出，后续以管理员明确确认完整导入的快照为基线。[设置、确认和故障处理](docs/v2-v1-compatible-nexus-export.md)
 
 v1 包包含 `.export-manifest.json` 和包目录下的元数据、tgz；scoped 包使用 `@scope/name/` 嵌套目录。v2 包包含 `.mirror-manifest.json` 和按 SHA256 命名的 `blobs/`，必须通过镜像同步页面导入。
 

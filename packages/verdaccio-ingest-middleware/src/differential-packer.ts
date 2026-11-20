@@ -1,6 +1,6 @@
-import { stableRead, legacyPublicMetadata } from './mirror-core';
+import { stableRead, legacyPublicMetadata, tarballIdentity } from './mirror-core';
 import { createReadStream, createWriteStream } from 'fs';
-import { mkdir, rm, copyFile, readFile, writeFile, stat } from 'fs/promises';
+import { mkdir, rm, copyFile, open, readFile, rename, writeFile, stat } from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
 import { pipeline } from 'stream/promises';
@@ -15,6 +15,11 @@ import {
   ExportRecord,
   ExportProgress
 } from './types';
+
+interface SnapshotPack {
+  trace: NonNullable<ExportManifest['snapshot']>;
+  fingerprints: ReadonlyMap<string, { checksum: string; size: number }>;
+}
 
 /**
  * 差分打包器
@@ -41,6 +46,7 @@ export class DifferentialPacker {
       baseTimestamp?: Date;
       outputDir: string;
       filenamePrefix?: string;
+      snapshot?: SnapshotPack;
       onProgress?: (progress: ExportProgress) => void;
     }
   ): Promise<{
@@ -55,18 +61,20 @@ export class DifferentialPacker {
       baseTimestamp,
       outputDir,
       filenamePrefix = 'diff-export',
+      snapshot,
       onProgress
     } = options;
 
     if (!/^[a-zA-Z0-9_-]+$/.test(filenamePrefix) || !/^[a-zA-Z0-9_-]+$/.test(exportId)) throw new Error('Unsafe export name');
     const timestamp = new Date();
     const timestampStr = timestamp.toISOString().replace(/[:.]/g, '-');
-    const filename = `${filenamePrefix}-${timestampStr}.tar.gz`;
+    const filename = snapshot ? `snapshot-${exportId}.tar.gz` : `${filenamePrefix}-${timestampStr}.tar.gz`;
     const outputPath = path.join(outputDir, filename);
+    const archivePath = snapshot ? path.join(outputDir, `.${exportId}.partial`) : outputPath;
 
     // 创建临时目录
     const tempDir = path.join(outputDir, `.temp-${exportId}`);
-    await mkdir(tempDir, { recursive: true });
+    await mkdir(tempDir, { recursive: !snapshot, mode: snapshot ? 0o700 : undefined });
 
     try {
       // 阶段 1: 计算文件校验和
@@ -76,7 +84,7 @@ export class DifferentialPacker {
       const total = files.length;
       const checksumLimit = pLimit(this.fileConcurrency);
 
-      await Promise.all(
+      const staging = await Promise.allSettled(
         files.map((file, index) =>
           checksumLimit(async () => {
             const safe = file.relativePath.replace(/%2f/gi, '/');
@@ -85,6 +93,14 @@ export class DifferentialPacker {
             const current = await stat(file.absolutePath);
             if (current.size !== file.size || current.mtime.getTime() !== file.mtime.getTime()) throw new Error('Source changed after scan');
             let observed = await stableRead(file.absolutePath, staged);
+            if (snapshot) {
+              const expected = snapshot.fingerprints.get(file.relativePath);
+              if (!expected || observed.size !== expected.size || observed.sha256 !== expected.checksum) {
+                throw new Error(`Tarball content changed after snapshot scan: ${file.relativePath}`);
+              }
+              if (file.type !== 'tarball' || !file.version) throw new Error('Snapshot entry must be an npm tarball');
+              await tarballIdentity(staged, { package: file.packageName, version: file.version }, 20 * 1024 ** 3);
+            }
             if (file.type === 'metadata') {
               await writeFile(staged, JSON.stringify(legacyPublicMetadata(JSON.parse(await readFile(staged, 'utf8')), file.packageName)));
               observed = await stableRead(staged);
@@ -116,6 +132,8 @@ export class DifferentialPacker {
           })
         )
       );
+      const failure = staging.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (failure) throw failure.reason;
 
       // Files were staged and hashed in one stream above; pack only the stable copies.
 
@@ -130,7 +148,8 @@ export class DifferentialPacker {
         exportId,
         timestamp: timestamp.toISOString(),
         baseTimestamp: baseTimestamp?.toISOString(),
-        type: baseTimestamp ? 'incremental' : 'full',
+        type: (snapshot ? snapshot.trace.baseSnapshotId !== null : Boolean(baseTimestamp)) ? 'incremental' : 'full',
+        snapshot: snapshot?.trace,
         files: filesWithChecksum,
         stats: {
           totalFiles: files.length,
@@ -161,15 +180,26 @@ export class DifferentialPacker {
       await tar.create(
         {
           gzip: true,
-          file: outputPath,
-          cwd: tempDir
+          file: archivePath,
+          cwd: tempDir,
+          strict: Boolean(snapshot)
         },
         ['.']
       );
 
       // 计算最终文件的校验和和大小
-      const outputStat = await stat(outputPath);
-      const outputChecksum = await this.calculateFileChecksum(outputPath);
+      const archived = snapshot
+        ? await stableRead(archivePath)
+        : { size: (await stat(archivePath)).size, sha256: await this.calculateFileChecksum(archivePath) };
+      if (snapshot) {
+        const archive = await open(archivePath, 'r+');
+        try {
+          await archive.sync();
+        } finally {
+          await archive.close();
+        }
+        await rename(archivePath, outputPath);
+      }
 
       if (onProgress) {
         onProgress({
@@ -184,21 +214,22 @@ export class DifferentialPacker {
       }
 
       this.logger.info(
-        { filename, size: outputStat.size, files: files.length },
+        { filename, size: archived.size, files: files.length },
         'Export package created: @{filename} (@{size} bytes, @{files} files)'
       );
 
       return {
         filename,
         path: outputPath,
-        size: outputStat.size,
-        checksum: outputChecksum,
+        size: archived.size,
+        checksum: archived.sha256,
         manifest
       };
     } finally {
       // 清理临时目录
       try {
         await rm(tempDir, { recursive: true, force: true });
+        if (snapshot) await rm(archivePath, { force: true });
       } catch {
         // 忽略清理错误
       }

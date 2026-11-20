@@ -1,5 +1,6 @@
 import { mirrorRouter } from './mirror-router';
-import { Router, Express, Request, Response, json } from 'express';
+import { Router, Express, Request, RequestHandler, Response, json } from 'express';
+import { randomUUID } from 'crypto';
 import { pluginUtils } from '@verdaccio/core';
 import { Config, Logger } from '@verdaccio/types';
 import { readFile, rename, writeFile } from 'fs/promises';
@@ -11,6 +12,7 @@ import { PackageDownloader } from './package-downloader';
 import { DependencyResolver } from './dependency-resolver';
 import { DifferentialScanner } from './differential-scanner';
 import { DifferentialPacker } from './differential-packer';
+import { SnapshotError, StandaloneSnapshots, snapshotTarget } from './standalone-snapshots';
 import { collectRangesFromPackument, selectRepairVersions } from './repair-planner';
 import { getWebUIHTML } from './web-ui';
 import {
@@ -91,6 +93,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
   // 差分导出相关
   private diffScanner!: DifferentialScanner;
   private diffPacker!: DifferentialPacker;
+  private standaloneSnapshots!: StandaloneSnapshots;
   // 缓存状态（/ingest/cache）扫描结果缓存：内存 + 磁盘快照，
   // 避免每次打开 UI 都对存储目录做全量扫描。
   // 注意：单测通过 Object.create(prototype) 复用实例，这些字段不做构造函数初始化，
@@ -147,6 +150,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     const concurrency = (this.config as IngestConfig).concurrency || 5;
     this.diffScanner = new DifferentialScanner(this.storagePath, this.logger, concurrency);
     this.diffPacker = new DifferentialPacker(this.storagePath, this.logger, concurrency);
+    this.standaloneSnapshots = new StandaloneSnapshots(this.storagePath, this.diffScanner, this.diffPacker, concurrency);
 
     // Reuse storage-plugin metrics; no cache implementation or mutating control is duplicated here.
     app.get('/_/ingest/cache/performance', (_req: any, res: any) => {
@@ -156,6 +160,11 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
     app.use(mirrorRouter(this.storagePath, '/_/ingest/mirror', { registryURL: (this.config as any).mirrorRegistryURL || ((this.config as any).host ? 'http://' + (this.config as any).host : undefined) }, storage));
     const router = Router();
+    const snapshotAdmin = this.requireSnapshotAdmin(auth);
+    const authorizeSnapshot: RequestHandler = (req, res, next) => {
+      if (req.body?.mode === undefined) return next();
+      return snapshotAdmin(req, res, next);
+    };
 
     // 添加 JSON body 解析中间件
     router.use(json());
@@ -182,7 +191,10 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     router.post('/ingest/platform', this.handlePlatformDownload.bind(this));
 
     // 查询任务状态
-    router.get('/ingest/status/:taskId', this.handleStatus.bind(this));
+    router.get('/ingest/status/:taskId', (req, res, next) => {
+      if (req.params.taskId.startsWith('snapshot-')) return snapshotAdmin(req, res, next);
+      return next();
+    }, this.handleStatus.bind(this));
 
     // 查看本地缓存状态
     router.get('/ingest/cache', this.handleCacheStatus.bind(this));
@@ -207,13 +219,16 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     router.get('/ingest/export/history', this.handleExportHistory.bind(this));
 
     // 预览待导出文件
-    router.post('/ingest/export/preview', this.handleExportPreview.bind(this));
+    router.post('/ingest/export/preview', authorizeSnapshot, this.handleExportPreview.bind(this));
 
     // 创建导出包
-    router.post('/ingest/export/create', this.handleExportCreate.bind(this));
+    router.post('/ingest/export/create', authorizeSnapshot, this.handleExportCreate.bind(this));
 
     // 下载导出包
     router.get('/ingest/export/download/:exportId', this.handleExportDownload.bind(this));
+    router.get('/ingest/export/snapshot/:target', snapshotAdmin, this.handleSnapshotStatus.bind(this));
+    router.get('/ingest/export/snapshot/:target/:exportId/download', snapshotAdmin, this.handleSnapshotDownload.bind(this));
+    router.post('/ingest/export/snapshot/:target/:exportId/confirm', snapshotAdmin, this.handleSnapshotConfirm.bind(this));
 
     app.use('/_', router);
 
@@ -2053,8 +2068,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
   /**
    * 创建任务
    */
-  private createTask(): string {
-    const taskId = `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  private createTask(taskId = `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`): string {
     this.tasks.set(taskId, {
       taskId,
       status: 'pending'
@@ -2104,6 +2118,88 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
   // ==================== 差分导出相关方法 ====================
 
+  private requireSnapshotAdmin(auth: { apiJWTmiddleware?(): RequestHandler } | undefined): RequestHandler {
+    const admins = (this.config as IngestConfig).standaloneSnapshotAdmins;
+    const authenticate = Array.isArray(admins) && admins.length > 0 ? auth?.apiJWTmiddleware?.() : undefined;
+    return (req, res, next) => {
+      if (!authenticate) {
+        res.status(403).json({ success: false, error: 'Standalone snapshot administrators are not configured' });
+        return;
+      }
+      return authenticate(req, res, (error?: unknown) => {
+        if (error) return next(error);
+        const username = (req as Request & { remote_user?: { name?: string } }).remote_user?.name;
+        if (!username) {
+          res.status(401).json({ success: false, error: 'Verdaccio authentication required' });
+        } else if (!admins?.includes(username)) {
+          res.status(403).json({ success: false, error: 'Standalone snapshot administrator required' });
+        } else {
+          res.locals.snapshotAdmin = username;
+          res.setHeader('Cache-Control', 'no-store');
+          next();
+        }
+      });
+    };
+  }
+
+  private parseSnapshotRequest(body: ExportCreateRequest): string {
+    if (body.mode !== 'standalone-snapshot') throw new SnapshotError('Unsupported export mode', 400);
+    if (body.since !== undefined && body.since !== 'last') {
+      throw new SnapshotError('Standalone snapshots only support since: last (last confirmed import)', 400);
+    }
+    if ((body.includeMetadata !== undefined && body.includeMetadata !== false) || body.filenamePrefix !== undefined) {
+      throw new SnapshotError('Standalone snapshots contain only tarballs and use a generated filename', 400);
+    }
+    return snapshotTarget(body.target);
+  }
+
+  private legacySinceWarning(since: unknown): string | undefined {
+    if (since === undefined) return undefined;
+    const warning = 'Legacy since ignored: exporting the full scope. Use standalone-snapshot with a target for an incremental tgz export.';
+    this.logger.warn(warning);
+    return warning;
+  }
+
+  private respondSnapshotError(res: Response, error: unknown): void {
+    const statusCode = error instanceof SnapshotError ? error.statusCode : 500;
+    const message = getErrorMessage(error);
+    if (statusCode === 500) this.logger.error({ error: message }, 'Standalone snapshot failed: @{error}');
+    res.status(statusCode).json({ success: false, error: message });
+  }
+
+  private async handleSnapshotStatus(req: Request, res: Response): Promise<void> {
+    try {
+      res.json({ success: true, ...await this.standaloneSnapshots.status(req.params.target) });
+    } catch (error) {
+      this.respondSnapshotError(res, error);
+    }
+  }
+
+  private async handleSnapshotConfirm(req: Request, res: Response): Promise<void> {
+    try {
+      const { target, exportId } = req.params;
+      const { archiveSha256, outcome } = req.body ?? {};
+      const confirmation = await this.standaloneSnapshots.confirm(target, exportId, archiveSha256, outcome, res.locals.snapshotAdmin);
+      res.json({ success: true, confirmation });
+    } catch (error) {
+      this.respondSnapshotError(res, error);
+    }
+  }
+
+  private async handleSnapshotDownload(req: Request, res: Response): Promise<void> {
+    try {
+      const archive = await this.standaloneSnapshots.download(req.params.target, req.params.exportId);
+      res.download(archive.path, archive.filename, error => {
+        if (error && !res.headersSent) {
+          this.respondSnapshotError(res, (error as NodeJS.ErrnoException).code === 'ENOENT'
+            ? new SnapshotError('Snapshot archive file not found', 404) : error);
+        }
+      });
+    } catch (error) {
+      this.respondSnapshotError(res, error);
+    }
+  }
+
   /**
    * 处理获取导出历史请求
    */
@@ -2129,28 +2225,27 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
    * 处理导出预览请求
    */
   private async handleExportPreview(req: Request, res: Response): Promise<void> {
-    const { since, includeMetadata = true } = req.body as ExportPreviewRequest;
+    if (req.body?.mode !== undefined) {
+      try {
+        const target = this.parseSnapshotRequest(req.body);
+        res.json({ success: true, ...await this.standaloneSnapshots.preview(target) });
+      } catch (error) {
+        this.respondSnapshotError(res, error);
+      }
+      return;
+    }
+    const { since, includeMetadata = true } = (req.body ?? {}) as ExportPreviewRequest;
 
     try {
-      let baseTimestamp: Date | undefined;
-
-      if (since === 'last') {
-        baseTimestamp = await this.diffScanner.getLastExportTimestamp() || undefined;
-      } else if (since) {
-        baseTimestamp = new Date(since);
-      }
-
-      const files = await this.diffScanner.scanModifiedFiles({
-        since: baseTimestamp,
-        includeMetadata
-      });
+      const warning = this.legacySinceWarning(since);
+      const files = await this.diffScanner.scanModifiedFiles({ includeMetadata });
 
       const stats = this.diffScanner.calculateStats(files);
       const entries = this.diffScanner.scannedFilesToEntries(files);
 
       res.json({
         success: true,
-        baseTimestamp: baseTimestamp?.toISOString(),
+        warning,
         files: entries,
         stats
       });
@@ -2164,16 +2259,31 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
    * 处理创建导出包请求
    */
   private async handleExportCreate(req: Request, res: Response): Promise<void> {
-    const { since, includeMetadata = true, filenamePrefix } = req.body as ExportCreateRequest;
+    if (req.body?.mode !== undefined) {
+      try {
+        const target = this.parseSnapshotRequest(req.body);
+        const exportId = randomUUID();
+        const taskId = this.createTask(`snapshot-${exportId}`);
+        this.updateTask(taskId, { status: 'running', progress: 0, message: 'Scanning tarballs' });
+        void this.standaloneSnapshots.create(target, exportId, progress => {
+          this.updateTask(taskId, {
+            progress: progress.totalProgress, message: progress.phaseDescription, detailedProgress: progress
+          });
+        }).then(result => {
+          this.updateTask(taskId, { status: 'completed', progress: 100, result });
+        }).catch(error => {
+          this.updateTask(taskId, { status: 'failed', error: getErrorMessage(error) });
+        });
+        res.json({ success: true, taskId, exportId, message: 'Snapshot export task started' });
+      } catch (error) {
+        this.respondSnapshotError(res, error);
+      }
+      return;
+    }
+    const { since, includeMetadata = true, filenamePrefix } = (req.body ?? {}) as ExportCreateRequest;
 
     try {
-      let baseTimestamp: Date | undefined;
-
-      if (since === 'last') {
-        baseTimestamp = await this.diffScanner.getLastExportTimestamp() || undefined;
-      } else if (since) {
-        baseTimestamp = new Date(since);
-      }
+      const warning = this.legacySinceWarning(since);
 
       // 创建任务
       const taskId = this.createTask();
@@ -2181,7 +2291,6 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
       // 异步执行导出
       this.executeExport(taskId, exportId, {
-        baseTimestamp,
         includeMetadata,
         filenamePrefix
       }).catch((error) => {
@@ -2195,6 +2304,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         success: true,
         taskId,
         exportId,
+        warning,
         message: 'Export task started'
       });
     } catch (error: any) {
@@ -2210,12 +2320,11 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     taskId: string,
     exportId: string,
     options: {
-      baseTimestamp?: Date;
       includeMetadata?: boolean;
       filenamePrefix?: string;
     }
   ): Promise<void> {
-    const { baseTimestamp, includeMetadata = true, filenamePrefix } = options;
+    const { includeMetadata = true, filenamePrefix } = options;
 
     this.updateTask(taskId, { status: 'running', progress: 0 });
 
@@ -2234,10 +2343,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
         }
       });
 
-      const files = await this.diffScanner.scanModifiedFiles({
-        since: baseTimestamp,
-        includeMetadata
-      });
+      const files = await this.diffScanner.scanModifiedFiles({ includeMetadata });
 
       if (files.length === 0) {
         this.updateTask(taskId, {
@@ -2261,7 +2367,6 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
       // 创建导出包
       const result = await this.diffPacker.createExportPackage(files, {
         exportId,
-        baseTimestamp,
         outputDir,
         filenamePrefix,
         onProgress: (progress: ExportProgress) => {

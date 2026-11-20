@@ -34,16 +34,16 @@ export function stable(value: any): string {
   return JSON.stringify(value);
 }
 export const digest = (v: any): string => createHash('sha256').update(stable(v)).digest('hex');
-const key = (a: Artifact): string => `${a.package}@${a.version}`;
+const key = (a: Pick<Artifact, 'package' | 'version'>): string => `${a.package}@${a.version}`;
 const canonical = (name: string, version: string): string => `${name}/${name.split('/').pop()}-${version}.tgz`;
 const artifactRoot = (as: Artifact[]): string => digest(as.map(a => ({ package: a.package, version: a.version, sha256: a.sha256, size: a.size })).sort((a,b) => stable(a).localeCompare(stable(b))));
 const semantic = (s: Snapshot): any => ({ schema: s.schema, repo_id: s.repo_id, scope_id: s.scope_id, artifacts: s.artifacts, metadata: s.metadata });
 const safeID = (s: string): string => { if (typeof s !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(s)) throw new Error('Invalid identifier'); return s; };
-function safeRelative(s: string): string {
+export function safeRelative(s: string): string {
   if (typeof s !== 'string' || s.length > 1024 || s.includes('\\') || /[%\x00-\x1f:]/.test(s.replace(/%2f/gi,'/')) || s.startsWith('/') || s.replace(/%2f/gi,'/').split('/').some(x => x === '.' || x === '..' || x === '')) throw new Error(`Unsafe path: ${s}`);
   return s;
 }
-function normalizedDirectory(s: string): string {
+export function normalizedDirectory(s: string): string {
   const n = s.replace(/%2f/gi, '/');
   if (!NAME.test(n) || n.split('/').some(x => x.startsWith('.'))) throw new Error(`Invalid package directory: ${s}`);
   return n;
@@ -114,7 +114,7 @@ function publicMetadata(raw: any, name: string): any {
   for (const [key, value] of Object.entries(raw.time || {})) if ((key === 'created' || key === 'modified' || versions[key]) && typeof value === 'string' && Number.isFinite(Date.parse(value))) time[key] = value;
   return { name, versions, 'dist-tags': tags, ...(Object.keys(time).length ? { time } : {}) };
 }
-async function tarballIdentity(file:string,artifact:Artifact,maxBytes:number):Promise<void>{
+export async function tarballIdentity(file:string,artifact:Pick<Artifact,'package'|'version'>,maxBytes:number):Promise<void>{
   let found:any, count=0;
   const parser=new (tar as any).Parser({strict:true,gzip:false,brotli:false,zstd:false,maxMetaEntrySize:1024*1024,onReadEntry:(e:any)=>{
     const p=e.path.replace(/^(\.\/)+/,'');

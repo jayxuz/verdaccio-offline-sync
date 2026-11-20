@@ -62,7 +62,7 @@ Archive, upload and registry-fetch dependencies are upgraded to tar 7, multer 2 
 
 Dependency audit scope: a standalone production install of the three packages on 2026-10-20 reports 14 affected dependency entries (12 high, 2 moderate, 0 critical) through `npm audit --omit=dev`. Remaining advisories originate in the Verdaccio 6 compatibility adapters and their pinned lodash/glob dependencies. This release retains Verdaccio 6.2.4 compatibility and does not claim that all base dependencies are advisory-free.
 
-**Compatibility changes:** legacy v1 exports remain supported, but `since` (including `last`) no longer filters files: v1 always exports the full scope. Imports always verify SHA256, sizes and archive structure. `validateChecksum: false` cannot bypass validation and `overwrite: true` cannot replace conflicting artifacts. Use v2 inventories for incremental transfers; an export record does not prove target acceptance.
+Legacy requests with `since` (including `last`) still export the full scope. For one-way delivery to Nexus, V2 also offers incremental exports in the V1 archive format. Legacy imports continue to validate SHA256, size, and archive structure and reject conflicting artifacts. [One-way export guide](docs/v2-v1-compatible-nexus-export.md)
 
 Back up configuration and package storage, upgrade both peers, and preserve each peer's own authentication files and repository identity. Run fresh complete scans and exchange inventories before following the receipt/acknowledgment flow. Never copy authentication databases or `.mirror-sync/repository.json` between peers. See the [migration guide](docs/mirror-v2-migration.md).
 
@@ -406,7 +406,7 @@ Use `/_/ingest/mirror/ui` online and `/_/healer/mirror/ui` offline. The offline 
 
 Scan both peers → exchange inventory JSON → reconcile → export missing artifacts → import and verify at the target → return the receipt → accept it at the source and return the acknowledgment → accept the acknowledgment at the target. Conflicting content for the same package/version blocks the transfer; peer-only artifacts are retained. Reverse peer roles to synchronize in the other direction.
 
-The original management page retains **Legacy Full Export** for v1 compatibility. It always scans the full scope; last-export and custom timestamps do not filter files. The metadata checkbox controls inclusion of `package.json`. Old export records are history only and do not establish v2 baselines.
+The original management page offers **V1-compatible archives**. A full export remains the default and can include `package.json`. Enable the administrator allowlist to choose one-way incremental tgz delivery to Nexus. Each target starts with a full archive and uses its last confirmed import as the baseline for the next export. [Configuration and confirmation](docs/v2-v1-compatible-nexus-export.md)
 
 v1 archives contain `.export-manifest.json` and package directories (including nested `@scope/name/`). v2 archives contain `.mirror-manifest.json` and SHA256-addressed `blobs/`; import them through the mirror UI.
 

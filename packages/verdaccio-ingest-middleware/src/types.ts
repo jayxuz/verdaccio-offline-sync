@@ -27,6 +27,8 @@ export interface IngestConfig {
   minTarballSize?: number;
   /** 缓存状态扫描快照有效期（秒），过期后下一次 /ingest/cache 请求触发后台重建（默认 600） */
   scanCacheTtlSeconds?: number;
+  /** Verdaccio usernames allowed to operate standalone snapshot exports. */
+  standaloneSnapshotAdmins?: string[];
 }
 
 /**
@@ -411,6 +413,12 @@ export interface ExportManifest {
   baseTimestamp?: string;
   /** 导出类型 */
   type: 'full' | 'incremental';
+  snapshot?: {
+    mode: 'standalone-snapshot';
+    target: string;
+    baseSnapshotId: string | null;
+    snapshotId: string;
+  };
   /** 来源系统信息 */
   source?: {
     hostname?: string;
@@ -472,7 +480,9 @@ export interface ScannedFile {
  * 导出预览请求
  */
 export interface ExportPreviewRequest {
-  /** 基准时间（ISO 8601 或 'last' 表示上次导出时间） */
+  mode?: 'standalone-snapshot';
+  target?: string;
+  /** 普通导出忽略此字段。快照模式的 'last' 表示目标最后一次确认完整导入。 */
   since?: string | 'last';
   /** 是否包含元数据文件 */
   includeMetadata?: boolean;
@@ -499,11 +509,7 @@ export interface ExportPreviewResponse {
 /**
  * 创建导出请求
  */
-export interface ExportCreateRequest {
-  /** 基准时间（ISO 8601 或 'last' 表示上次导出时间） */
-  since?: string | 'last';
-  /** 是否包含元数据文件 */
-  includeMetadata?: boolean;
+export interface ExportCreateRequest extends ExportPreviewRequest {
   /** 自定义文件名前缀 */
   filenamePrefix?: string;
 }

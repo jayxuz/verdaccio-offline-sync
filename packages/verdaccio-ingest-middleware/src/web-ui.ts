@@ -5,6 +5,7 @@
 
 export function getWebUIHTML(config: any): string {
   const title = config?.title || 'Verdaccio Offline Sync';
+  const snapshotEnabled = Array.isArray(config?.standaloneSnapshotAdmins) && config.standaloneSnapshotAdmins.length > 0;
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -990,8 +991,7 @@ export function getWebUIHTML(config: any): string {
 
     <!-- 差分导出 -->
     <div class="card">
-      <h2>📤 旧格式完整导出</h2>
-      <p>此入口导出完整缓存。需要只传输对方缺少的包，请使用<a href="/_/ingest/mirror/ui">双向镜像同步</a>。</p>
+      <h2>📤 V1 兼容归档</h2>
       <div class="form-group">
         <label>导出历史</label>
         <div id="exportHistory" class="package-list" style="max-height: 150px;">
@@ -999,21 +999,25 @@ export function getWebUIHTML(config: any): string {
         </div>
       </div>
       <div class="form-group">
-        <label>基准时间</label>
-        <div class="option-row">
-          <label><input type="radio" name="exportBase" value="last" disabled><span>上次导出时间（已停用）</span></label>
-          <button class="help-btn" type="button">?<span class="tooltip">请使用双向镜像同步，按对方实际库存生成差异包。</span></button>
-        </div>
-        <div class="option-row">
-          <label><input type="radio" name="exportBase" value="custom" disabled><span>自定义时间（已停用）</span></label>
-          <input type="datetime-local" id="customExportTime" style="margin-left: 10px; padding: 5px;" disabled>
+        <label>导出模式</label>
+        <div class="option-row ${snapshotEnabled ? '' : 'hidden'}">
+          <label><input type="radio" name="exportBase" value="snapshot"><span>单向增量到 Nexus（仅 tgz）</span></label>
         </div>
         <div class="option-row">
           <label><input type="radio" name="exportBase" value="full" checked><span>全量导出</span></label>
           <button class="help-btn" type="button">?<span class="tooltip">导出所有文件，不考虑时间点</span></button>
         </div>
       </div>
-      <div class="form-group">
+      <div class="form-group hidden" id="exportSnapshotOptions">
+        <label for="exportSnapshotTarget">目标通道</label>
+        <input id="exportSnapshotTarget" type="text" maxlength="64" placeholder="nexus-prod">
+        <label for="exportSnapshotToken">Verdaccio 管理员令牌</label>
+        <input id="exportSnapshotToken" type="password" autocomplete="off">
+        <button class="btn btn-primary" type="button" onclick="loadSnapshotStatus()">刷新目标快照状态</button>
+        <p id="snapshotStatus" role="status"></p>
+        <div id="snapshotRecords" class="package-list"></div>
+      </div>
+      <div class="form-group" id="exportLegacyOptions">
         <label>导出选项</label>
         <div class="option-row">
           <label><input type="checkbox" id="exportIncludeMetadata" checked><span>包含元数据文件</span></label>
@@ -1047,6 +1051,7 @@ export function getWebUIHTML(config: any): string {
           </div>
         </div>
         <div class="download-list" id="exportFileList" style="max-height: 200px;"></div>
+        <pre id="exportSnapshotConflicts" class="hidden" style="white-space: pre-wrap; color: #a62020"></pre>
       </div>
 
       <!-- 导出进度 -->
@@ -1070,6 +1075,7 @@ export function getWebUIHTML(config: any): string {
           <a id="exportDownloadLink" href="#" class="btn btn-success" download>
             📥 下载导出包
           </a>
+          <button id="exportSnapshotDownload" class="btn btn-success hidden" type="button">下载快照归档</button>
           <button class="btn btn-primary" onclick="resetExport()" style="margin-left: 10px;">
             ↩️ 返回
           </button>
@@ -2156,9 +2162,117 @@ export function getWebUIHTML(config: any): string {
 
     // ==================== 差分导出相关函数 ====================
 
-    let currentExportTaskId = null;
     let exportPollInterval = null;
     let currentExportPreview = null;
+
+    function snapshotHeaders(headers = {}) {
+      const token = document.getElementById('exportSnapshotToken').value.trim();
+      return token ? { ...headers, Authorization: 'Bearer ' + token } : headers;
+    }
+
+    function exportLog(message, type) {
+      const safe = document.createElement('span');
+      safe.textContent = message;
+      addLog(safe.innerHTML, type);
+    }
+
+    async function loadSnapshotStatus(target = document.getElementById('exportSnapshotTarget').value.trim()) {
+      const notice = document.getElementById('snapshotStatus');
+      const list = document.getElementById('snapshotRecords');
+      list.replaceChildren();
+      try {
+        const response = await fetch(API_BASE + '/export/snapshot/' + encodeURIComponent(target), { headers: snapshotHeaders() });
+        const data = await response.json();
+        if (!data.success) throw Error(data.error);
+        if (target !== document.getElementById('exportSnapshotTarget').value.trim()) return;
+        notice.textContent = data.snapshotId
+          ? '当前基线 ' + data.snapshotId + '，已确认 ' + data.confirmedVersions + ' 个版本'
+          : '尚无已确认的快照，下次导出为全量。';
+        const labels = {
+          preparing: '准备中', failed: '失败', empty: '无新增', pending: '待确认',
+          confirmed: '已确认', superseded: '基线已前进'
+        };
+        for (const record of data.records) {
+          const item = document.createElement('div');
+          item.className = 'package-item';
+          const details = document.createElement('div');
+          details.textContent = labels[record.status] + ' · ' + record.createdAt + ' · ' + record.exportId;
+          item.append(details);
+          if (record.error) {
+            const error = document.createElement('div');
+            error.textContent = record.error;
+            details.append(error);
+          }
+          if (record.archive) {
+            const hash = document.createElement('div');
+            hash.textContent = 'SHA256 ' + record.archive.checksum;
+            details.append(hash);
+            const download = document.createElement('button');
+            download.className = 'btn btn-primary';
+            download.textContent = '下载';
+            download.onclick = () => downloadSnapshot(record.downloadUrl, record.archive.filename);
+            item.append(download);
+          }
+          if (record.status === 'pending') {
+            const confirm = document.createElement('button');
+            confirm.className = 'btn btn-success';
+            confirm.textContent = '确认已完整导入';
+            confirm.onclick = () => confirmSnapshot(target, record, confirm);
+            item.append(confirm);
+          }
+          list.append(item);
+        }
+      } catch (error) {
+        if (target === document.getElementById('exportSnapshotTarget').value.trim()) {
+          notice.textContent = '读取快照状态失败：' + error.message;
+        }
+      }
+    }
+
+    async function confirmSnapshot(target, record, button) {
+      const archiveSha256 = window.prompt('确认目标 ' + target +
+        ' 已完整导入此归档。请输入实际导入归档的 SHA256（部分或未知结果请取消）。');
+      if (!archiveSha256?.trim()) return;
+      button.disabled = true;
+      try {
+        const route = '/export/snapshot/' + encodeURIComponent(target) + '/' + record.exportId + '/confirm';
+        const response = await fetch(API_BASE + route, {
+          method: 'POST',
+          headers: snapshotHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ outcome: 'complete', archiveSha256: archiveSha256.trim() })
+        });
+        const data = await response.json();
+        if (!data.success) throw Error(data.error);
+        exportLog('已确认目标 ' + target + ' 完整导入 ' + record.exportId, 'success');
+        await loadSnapshotStatus(target);
+      } catch (error) {
+        exportLog('确认导入失败：' + error.message, 'error');
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function downloadSnapshot(url, filename) {
+      try {
+        const file = window.showSaveFilePicker
+          ? await window.showSaveFilePicker({ suggestedName: filename })
+          : null;
+        const response = await fetch(url, { headers: snapshotHeaders() });
+        if (!response.ok) throw Error('HTTP ' + response.status);
+        if (file) {
+          await response.body.pipeTo(await file.createWritable());
+          return;
+        }
+        const objectUrl = URL.createObjectURL(await response.blob());
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = filename;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      } catch (error) {
+        if (error.name !== 'AbortError') exportLog('下载快照归档失败：' + error.message, 'error');
+      }
+    }
 
     // 加载导出历史
     async function loadExportHistory() {
@@ -2199,50 +2313,48 @@ export function getWebUIHTML(config: any): string {
       return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
     }
 
-    // 获取导出基准时间
-    function getExportBaseTime() {
+    function getExportRequest() {
       const selected = document.querySelector('input[name="exportBase"]:checked').value;
-      if (selected === 'last') {
-        return 'last';
-      } else if (selected === 'custom') {
-        const customTime = document.getElementById('customExportTime').value;
-        if (!customTime) {
-          addLog('请选择自定义时间', 'warning');
+      if (selected === 'snapshot') {
+        const target = document.getElementById('exportSnapshotTarget').value.trim();
+        if (!target) {
+          addLog('请输入目标通道', 'warning');
           return null;
         }
-        return new Date(customTime).toISOString();
-      } else {
-        return undefined; // 全量导出
+        return { mode: 'standalone-snapshot', target, since: 'last' };
       }
+      const includeMetadata = document.getElementById('exportIncludeMetadata').checked;
+      return { includeMetadata };
     }
 
     // 预览导出
     async function previewExport() {
-      const since = getExportBaseTime();
-      if (since === null) return;
-
-      const includeMetadata = document.getElementById('exportIncludeMetadata').checked;
+      const request = getExportRequest();
+      if (!request) return;
 
       try {
         document.getElementById('previewExportBtn').disabled = true;
+        document.getElementById('createExportBtn').disabled = true;
+        currentExportPreview = null;
         addLog('正在预览待导出文件...', 'info');
 
         const response = await fetch(API_BASE + '/export/preview', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ since, includeMetadata })
+          headers: request.mode ? snapshotHeaders({ 'Content-Type': 'application/json' }) : { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request)
         });
         const data = await response.json();
 
         if (data.success) {
-          currentExportPreview = data;
+          if (JSON.stringify(request) !== JSON.stringify(getExportRequest())) return;
+          currentExportPreview = request;
           showExportPreview(data);
           addLog('预览完成: ' + data.stats.totalFiles + ' 个文件, ' + formatSize(data.stats.totalSize), 'success');
         } else {
-          addLog('预览失败: ' + (data.error || '未知错误'), 'error');
+          exportLog('预览失败: ' + (data.error || '未知错误'), 'error');
         }
       } catch (error) {
-        addLog('预览失败: ' + error.message, 'error');
+        exportLog('预览失败: ' + error.message, 'error');
       } finally {
         document.getElementById('previewExportBtn').disabled = false;
       }
@@ -2253,6 +2365,12 @@ export function getWebUIHTML(config: any): string {
       document.getElementById('exportFileCount').textContent = data.stats.totalFiles;
       document.getElementById('exportPackageCount').textContent = data.stats.packages;
       document.getElementById('exportTotalSize').textContent = formatSize(data.stats.totalSize);
+      const conflicts = document.getElementById('exportSnapshotConflicts');
+      conflicts.classList.toggle('hidden', !data.conflicts?.length);
+      conflicts.textContent = (data.conflicts || []).map(conflict =>
+        conflict.packageName + '@' + conflict.version + '：SHA256 ' +
+        conflict.expected.checksum + ' / ' + conflict.actual.checksum
+      ).join('\\n');
 
       const fileList = document.getElementById('exportFileList');
       if (data.files.length === 0) {
@@ -2275,7 +2393,7 @@ export function getWebUIHTML(config: any): string {
           fileList.innerHTML += '<p style="text-align: center; padding: 10px; color: #666;">... 还有 ' +
             (data.files.length - 30) + ' 个文件</p>';
         }
-        document.getElementById('createExportBtn').disabled = false;
+        document.getElementById('createExportBtn').disabled = Boolean(data.conflicts?.length);
       }
 
       document.getElementById('exportPreview').classList.remove('hidden');
@@ -2285,10 +2403,8 @@ export function getWebUIHTML(config: any): string {
 
     // 创建导出包
     async function createExport() {
-      const since = getExportBaseTime();
-      if (since === null) return;
-
-      const includeMetadata = document.getElementById('exportIncludeMetadata').checked;
+      const request = getExportRequest();
+      if (!request || JSON.stringify(request) !== JSON.stringify(currentExportPreview)) return;
 
       try {
         document.getElementById('createExportBtn').disabled = true;
@@ -2297,29 +2413,29 @@ export function getWebUIHTML(config: any): string {
 
         const response = await fetch(API_BASE + '/export/create', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ since, includeMetadata })
+          headers: request.mode ? snapshotHeaders({ 'Content-Type': 'application/json' }) : { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request)
         });
         const data = await response.json();
 
         if (data.success && data.taskId) {
-          currentExportTaskId = data.taskId;
+
           addLog('导出任务已启动: ' + data.taskId, 'success');
-          startExportPolling(data.taskId);
+          startExportPolling(data.taskId, request.target);
         } else {
-          addLog('创建导出失败: ' + (data.error || '未知错误'), 'error');
+          exportLog('创建导出失败: ' + (data.error || '未知错误'), 'error');
           document.getElementById('createExportBtn').disabled = false;
           document.getElementById('previewExportBtn').disabled = false;
         }
       } catch (error) {
-        addLog('创建导出失败: ' + error.message, 'error');
+        exportLog('创建导出失败: ' + error.message, 'error');
         document.getElementById('createExportBtn').disabled = false;
         document.getElementById('previewExportBtn').disabled = false;
       }
     }
 
     // 开始轮询导出状态
-    function startExportPolling(taskId) {
+    function startExportPolling(taskId, target) {
       if (exportPollInterval) {
         clearInterval(exportPollInterval);
       }
@@ -2329,8 +2445,13 @@ export function getWebUIHTML(config: any): string {
 
       exportPollInterval = setInterval(async () => {
         try {
-          const response = await fetch(API_BASE + '/status/' + taskId);
+          const response = await fetch(API_BASE + '/status/' + taskId, { headers: target ? snapshotHeaders() : {} });
           const task = await response.json();
+          if (!response.ok) {
+            resetExport();
+            if (target) loadSnapshotStatus(target);
+            throw Error(task.error || response.status);
+          }
 
           updateExportProgress(task);
 
@@ -2339,16 +2460,18 @@ export function getWebUIHTML(config: any): string {
             exportPollInterval = null;
 
             if (task.status === 'completed' && task.result) {
-              addLog('导出完成: ' + task.result.filename, 'success');
+              exportLog(task.result.filename ? '导出完成: ' + task.result.filename : '没有需要导出的文件', 'success');
               showExportComplete(task.result);
-              loadExportHistory(); // 刷新历史
+              if (target) loadSnapshotStatus(target);
+              else loadExportHistory();
             } else {
-              addLog('导出失败: ' + (task.error || '未知错误'), 'error');
+              exportLog('导出失败: ' + (task.error || '未知错误'), 'error');
               resetExport();
+              if (target) loadSnapshotStatus(target);
             }
           }
         } catch (error) {
-          addLog('获取导出状态失败: ' + error.message, 'error');
+          exportLog('获取导出状态失败: ' + error.message, 'error');
         }
       }, 1000);
     }
@@ -2379,15 +2502,20 @@ export function getWebUIHTML(config: any): string {
       document.getElementById('exportProgress').classList.add('hidden');
       document.getElementById('exportComplete').classList.remove('hidden');
 
-      document.getElementById('exportFilename').textContent =
-        result.filename + ' (' + formatSize(result.fileSize) + ')';
-      document.getElementById('exportDownloadLink').href = result.downloadUrl;
+      document.getElementById('exportFilename').textContent = result.filename
+        ? result.filename + ' (' + formatSize(result.fileSize) + ')' : '没有需要导出的文件';
+      const legacy = document.getElementById('exportDownloadLink');
+      const snapshot = document.getElementById('exportSnapshotDownload');
+      legacy.classList.toggle('hidden', !result.downloadUrl || Boolean(result.snapshot));
+      snapshot.classList.toggle('hidden', !result.snapshot);
+      legacy.href = result.downloadUrl || '#';
+      snapshot.onclick = result.snapshot ? () => downloadSnapshot(result.downloadUrl, result.filename) : null;
     }
 
     // 重置导出状态
     function resetExport() {
       currentExportPreview = null;
-      currentExportTaskId = null;
+
       if (exportPollInterval) {
         clearInterval(exportPollInterval);
         exportPollInterval = null;
@@ -2403,13 +2531,22 @@ export function getWebUIHTML(config: any): string {
     // 监听导出基准时间选择变化
     document.querySelectorAll('input[name="exportBase"]').forEach(radio => {
       radio.addEventListener('change', function() {
-        const customTimeInput = document.getElementById('customExportTime');
-        customTimeInput.disabled = this.value !== 'custom';
-        if (this.value === 'custom') {
-          customTimeInput.focus();
-        }
+        document.getElementById('exportSnapshotOptions').classList.toggle('hidden', this.value !== 'snapshot');
+        document.getElementById('exportLegacyOptions').classList.toggle('hidden', this.value === 'snapshot');
+        document.getElementById('createExportBtn').disabled = true;
+        currentExportPreview = null;
       });
     });
+    for (const id of ['exportSnapshotTarget', 'exportIncludeMetadata']) {
+      document.getElementById(id).addEventListener('change', () => {
+        document.getElementById('createExportBtn').disabled = true;
+        currentExportPreview = null;
+        if (id === 'exportSnapshotTarget') {
+          document.getElementById('snapshotStatus').textContent = '';
+          document.getElementById('snapshotRecords').replaceChildren();
+        }
+      });
+    }
 
     // 页面加载时刷新状态
     document.addEventListener('DOMContentLoaded', function() {

@@ -1,4 +1,4 @@
-import { readdir, stat, readFile, writeFile, mkdir } from 'fs/promises';
+import { lstat, readdir, stat, readFile, writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 import pLimit from 'p-limit';
 import { Logger } from '@verdaccio/types';
@@ -34,9 +34,10 @@ export class DifferentialScanner {
   async scanModifiedFiles(options: {
     since?: Date;
     includeMetadata?: boolean;
+    standaloneSnapshot?: boolean;
   }): Promise<ScannedFile[]> {
     // v1 timestamps are untrusted. Preserve archive compatibility by exporting a full scope.
-    const { includeMetadata = true } = options;
+    const { includeMetadata = true, standaloneSnapshot = false } = options;
     const since = undefined;
     if (options.since) this.logger.warn('Legacy mtime baseline ignored; use mirror v2 inventories and verified receipts');
     const files: ScannedFile[] = [];
@@ -46,7 +47,10 @@ export class DifferentialScanner {
       'Scanning modified files since @{since}'
     );
 
-    await this.scanDirectory('', files, since, includeMetadata);
+    if (standaloneSnapshot && !(await lstat(this.storagePath)).isDirectory()) {
+      throw new Error('Storage root must be a real directory');
+    }
+    await this.scanDirectory('', files, since, includeMetadata, standaloneSnapshot);
 
     this.logger.info(
       { count: files.length },
@@ -63,7 +67,8 @@ export class DifferentialScanner {
     relativePath: string,
     files: ScannedFile[],
     since?: Date,
-    includeMetadata?: boolean
+    includeMetadata?: boolean,
+    standaloneSnapshot = false
   ): Promise<void> {
     const absolutePath = path.join(this.storagePath, relativePath);
 
@@ -86,11 +91,14 @@ export class DifferentialScanner {
 
             if (entry.isDirectory()) {
               // 递归扫描子目录（使用原始路径以匹配实际文件系统）
-              await this.scanDirectory(entryRelativePath, files, since, includeMetadata);
+              await this.scanDirectory(entryRelativePath, files, since, includeMetadata, standaloneSnapshot);
               return;
             }
 
             if (!entry.isFile()) {
+              if (standaloneSnapshot && (entry.isSymbolicLink() || entry.name.endsWith('.tgz'))) {
+                throw new Error(`Unsupported entry in snapshot: ${entryRelativePath}`);
+              }
               return;
             }
 
@@ -141,7 +149,7 @@ export class DifferentialScanner {
    * 例如: @babel%2fcore -> @babel/core
    */
   private normalizePackagePath(p: string): string {
-    return p.replace(/%2f/gi, '/');
+    return p.split(path.sep).join('/').replace(/%2f/gi, '/');
   }
 
   /**
@@ -161,7 +169,7 @@ export class DifferentialScanner {
    * 从目录路径提取包名
    */
   private extractPackageName(relativePath: string): string {
-    const parts = relativePath.split(path.sep);
+    const parts = relativePath.split('/');
     // 处理 scoped 包：嵌套结构 @scope/package -> 取前两段
     if (parts[0] && parts[0].startsWith('@') && parts.length >= 2) {
       return `${parts[0]}/${parts[1]}`;
