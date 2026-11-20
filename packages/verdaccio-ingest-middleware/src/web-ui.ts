@@ -1001,16 +1001,17 @@ export function getWebUIHTML(config: any): string {
       <div class="form-group">
         <label>导出模式</label>
         <div class="option-row ${snapshotEnabled ? '' : 'hidden'}">
-          <label><input type="radio" name="exportBase" value="snapshot"><span>单向增量到 Nexus（仅 tgz）</span></label>
+          <label><input type="radio" name="exportBase" value="snapshot" aria-describedby="exportSnapshotDescription"><span>导出 V1 兼容包</span></label>
+          <small id="exportSnapshotDescription">归档仅包含 npm .tgz 和 V1 导出清单。每个目标首次全量，确认整批导入后只导出新增版本。</small>
         </div>
         <div class="option-row">
-          <label><input type="radio" name="exportBase" value="full" checked><span>全量导出</span></label>
-          <button class="help-btn" type="button">?<span class="tooltip">导出所有文件，不考虑时间点</span></button>
+          <label><input type="radio" name="exportBase" value="full" checked><span>普通全量导出</span></label>
+          <button class="help-btn" type="button">?<span class="tooltip">每次全量扫描，可选择附带 package.json</span></button>
         </div>
       </div>
       <div class="form-group hidden" id="exportSnapshotOptions">
         <label for="exportSnapshotTarget">目标通道</label>
-        <input id="exportSnapshotTarget" type="text" maxlength="64" placeholder="nexus-prod">
+        <input id="exportSnapshotTarget" type="text" maxlength="64" placeholder="offline-npm">
         <label for="exportSnapshotToken">Verdaccio 管理员令牌</label>
         <input id="exportSnapshotToken" type="password" autocomplete="off">
         <button class="btn btn-primary" type="button" onclick="loadSnapshotStatus()">刷新目标快照状态</button>

@@ -62,7 +62,7 @@ Archive, upload and registry-fetch dependencies are upgraded to tar 7, multer 2 
 
 Dependency audit scope: a standalone production install of the three packages on 2026-10-20 reports 14 affected dependency entries (12 high, 2 moderate, 0 critical) through `npm audit --omit=dev`. Remaining advisories originate in the Verdaccio 6 compatibility adapters and their pinned lodash/glob dependencies. This release retains Verdaccio 6.2.4 compatibility and does not claim that all base dependencies are advisory-free.
 
-Legacy requests with `since` (including `last`) still export the full scope. For one-way delivery to Nexus, V2 also offers incremental exports in the V1 archive format. Legacy imports continue to validate SHA256, size, and archive structure and reject conflicting artifacts. [One-way export guide](docs/v2-v1-compatible-nexus-export.md)
+Legacy requests with `since` (including `last`) still export the full scope. In V2, choose **Export V1-Compatible Package** for one-way incremental delivery to an offline npm registry. Legacy imports continue to validate SHA256, size, and archive structure and reject conflicting artifacts. [V1-compatible export guide](docs/v2-v1-compatible-nexus-export.md)
 
 Back up configuration and package storage, upgrade both peers, and preserve each peer's own authentication files and repository identity. Run fresh complete scans and exchange inventories before following the receipt/acknowledgment flow. Never copy authentication databases or `.mirror-sync/repository.json` between peers. See the [migration guide](docs/mirror-v2-migration.md).
 
@@ -400,13 +400,13 @@ Displays locally cached packages:
 - Version count
 - Latest cached version
 
-#### 7. Mirror Sync and Legacy Full Export
+#### 7. Mirror Sync and V1 Archives
 
 Use `/_/ingest/mirror/ui` online and `/_/healer/mirror/ui` offline. The offline middleware requires `enableImportUI: true`.
 
 Scan both peers → exchange inventory JSON → reconcile → export missing artifacts → import and verify at the target → return the receipt → accept it at the source and return the acknowledgment → accept the acknowledgment at the target. Conflicting content for the same package/version blocks the transfer; peer-only artifacts are retained. Reverse peer roles to synchronize in the other direction.
 
-The original management page offers **V1-compatible archives**. A full export remains the default and can include `package.json`. Enable the administrator allowlist to choose one-way incremental tgz delivery to Nexus. Each target starts with a full archive and uses its last confirmed import as the baseline for the next export. [Configuration and confirmation](docs/v2-v1-compatible-nexus-export.md)
+The **V1-compatible archives** card defaults to **Full Export**, which can include `package.json`. Enable the administrator allowlist to choose **Export V1-Compatible Package**. These archives contain only npm `.tgz` files and the V1 export manifest. Each target starts with a full export. After an administrator confirms the entire import, the next export includes only new versions. [Configuration and confirmation](docs/v2-v1-compatible-nexus-export.md)
 
 v1 archives contain `.export-manifest.json` and package directories (including nested `@scope/name/`). v2 archives contain `.mirror-manifest.json` and SHA256-addressed `blobs/`; import them through the mirror UI.
 
@@ -627,9 +627,9 @@ curl -X POST http://external:4873/_/ingest/download \
 
 Exchange fresh complete inventories on first migration or after a broken chain. History reports changes observed between saved successful scans, not exact filesystem state at arbitrary times.
 
-### Compatibility: v1 Full Archives
+### V1 Archive Export and Import
 
-Preview, create and download an archive through Legacy Full Export, then import it at the offline `/_/healer/ui`. v1 does not generate v2 receipts or establish a common baseline. Switch to v2 for subsequent incremental transfers. Do not overwrite authentication databases, repository identity or transfer journals by copying whole storage directories.
+Choose **Full Export** on the online management page to preview, create, and download an archive, then import it at the offline `/_/healer/ui`. For one-way incremental delivery, choose **Export V1-Compatible Package** and confirm on the source page once the entire import has succeeded at the target. Use the V2 mirror pages to exchange inventories and receipts between peers. Do not overwrite authentication databases, repository identity, or transfer journals by copying whole storage directories. [One-way delivery workflow](docs/v2-v1-compatible-nexus-export.md)
 
 ### Command Line Method
 
