@@ -16,6 +16,7 @@ import { SnapshotError, StandaloneSnapshots, snapshotTarget } from './standalone
 import { collectRangesFromPackument, selectRepairVersions } from './repair-planner';
 import { getWebUIHTML } from './web-ui';
 import { snapshotAccessPolicy } from './snapshot-access-policy';
+import { legacyMigrationRequest } from './legacy-snapshot-cutoff';
 import {
   IngestConfig,
   IngestRequest,
@@ -228,6 +229,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     // 下载导出包
     router.get('/ingest/export/download/:exportId', this.handleExportDownload.bind(this));
     router.get('/ingest/export/snapshot/:target', snapshotUser, this.handleSnapshotStatus.bind(this));
+    router.get('/ingest/export/snapshot/:target/legacy-cutoffs', snapshotUser, this.handleSnapshotLegacyCutoffs.bind(this));
     router.get('/ingest/export/snapshot/:target/:exportId/download', snapshotUser, this.handleSnapshotDownload.bind(this));
     router.post('/ingest/export/snapshot/:target/:exportId/confirm', snapshotUser, this.handleSnapshotConfirm.bind(this));
 
@@ -2156,6 +2158,15 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     return snapshotTarget(body.target);
   }
 
+  private parseLegacySnapshotMigration(value: unknown, creating: boolean) {
+    if (value === undefined) return undefined;
+    try {
+      return legacyMigrationRequest(value, creating);
+    } catch (error) {
+      throw new SnapshotError(getErrorMessage(error), 400);
+    }
+  }
+
   private legacySinceWarning(since: unknown): string | undefined {
     if (since === undefined) return undefined;
     const warning = 'Legacy since ignored: exporting the full scope. Use standalone-snapshot with a target for an incremental tgz export.';
@@ -2170,6 +2181,14 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     res.status(statusCode).json({ success: false, error: message });
   }
 
+  private async handleSnapshotLegacyCutoffs(req: Request, res: Response): Promise<void> {
+    try {
+      res.json({ success: true, ...await this.standaloneSnapshots.legacyCutoffs(req.params.target) });
+    } catch (error) {
+      this.respondSnapshotError(res, error);
+    }
+  }
+
   private async handleSnapshotStatus(req: Request, res: Response): Promise<void> {
     try {
       res.json({ success: true, ...await this.standaloneSnapshots.status(req.params.target) });
@@ -2181,8 +2200,8 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
   private async handleSnapshotConfirm(req: Request, res: Response): Promise<void> {
     try {
       const { target, exportId } = req.params;
-      const { archiveSha256, outcome } = req.body ?? {};
-      const confirmation = await this.standaloneSnapshots.confirm(target, exportId, archiveSha256, outcome, res.locals.snapshotUser);
+      const { archiveSha256, outcome, attestPriorImport } = req.body ?? {};
+      const confirmation = await this.standaloneSnapshots.confirm(target, exportId, archiveSha256, outcome, res.locals.snapshotUser, attestPriorImport);
       res.json({ success: true, confirmation });
     } catch (error) {
       this.respondSnapshotError(res, error);
@@ -2231,7 +2250,8 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     if (req.body?.mode !== undefined) {
       try {
         const target = this.parseSnapshotRequest(req.body);
-        res.json({ success: true, ...await this.standaloneSnapshots.preview(target) });
+        const migration = this.parseLegacySnapshotMigration(req.body.legacyMigration, false);
+        res.json({ success: true, ...await this.standaloneSnapshots.preview(target, migration) });
       } catch (error) {
         this.respondSnapshotError(res, error);
       }
@@ -2265,6 +2285,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     if (req.body?.mode !== undefined) {
       try {
         const target = this.parseSnapshotRequest(req.body);
+        const migration = this.parseLegacySnapshotMigration(req.body.legacyMigration, true);
         const exportId = randomUUID();
         const taskId = this.createTask(`snapshot-${exportId}`);
         this.updateTask(taskId, { status: 'running', progress: 0, message: 'Scanning tarballs' });
@@ -2272,7 +2293,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
           this.updateTask(taskId, {
             progress: progress.totalProgress, message: progress.phaseDescription, detailedProgress: progress
           });
-        }).then(result => {
+        }, migration, res.locals.snapshotUser).then(result => {
           this.updateTask(taskId, { status: 'completed', progress: 100, result });
         }).catch(error => {
           this.updateTask(taskId, { status: 'failed', error: getErrorMessage(error) });

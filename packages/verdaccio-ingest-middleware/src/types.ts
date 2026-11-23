@@ -418,6 +418,8 @@ export interface ExportManifest {
     target: string;
     baseSnapshotId: string | null;
     snapshotId: string;
+    /** Explicit V1 migration; only shipped tarballs appear in the archive manifest. */
+    legacyCutoff?: string;
   };
   /** 来源系统信息 */
   source?: {
@@ -479,9 +481,15 @@ export interface ScannedFile {
 /**
  * 导出预览请求
  */
+export type LegacySnapshotMigrationRequest = (
+  { source: 'history'; exportId: string } | { source: 'manual'; cutoff: string }
+) & { attestPriorImport?: true; previewFingerprint?: string };
+
 export interface ExportPreviewRequest {
   mode?: 'standalone-snapshot';
   target?: string;
+  /** Optional one-time V1 estimate. Create requires explicit prior import attestation and current preview. */
+  legacyMigration?: LegacySnapshotMigrationRequest;
   /** 普通导出忽略此字段。快照模式的 'last' 表示目标最后一次确认完整导入。 */
   since?: string | 'last';
   /** 是否包含元数据文件 */

@@ -148,7 +148,7 @@ export class DifferentialPacker {
         exportId,
         timestamp: timestamp.toISOString(),
         baseTimestamp: baseTimestamp?.toISOString(),
-        type: (snapshot ? snapshot.trace.baseSnapshotId !== null : Boolean(baseTimestamp)) ? 'incremental' : 'full',
+        type: (snapshot ? snapshot.trace.baseSnapshotId !== null || Boolean(snapshot.trace.legacyCutoff) : Boolean(baseTimestamp)) ? 'incremental' : 'full',
         snapshot: snapshot?.trace,
         files: filesWithChecksum,
         stats: {

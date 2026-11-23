@@ -410,6 +410,8 @@ find "$STORAGE_DIR" -type f -name package.json -exec jq -e empty {} +
 
 原管理页的「V1 兼容归档」默认选中「普通全量导出」，可选择附带 `package.json`。默认可选择「导出 V1 兼容包」，需要有效的 Verdaccio 登录令牌。可配置 `standaloneSnapshotAdmins` 限制操作账号，或用空数组关闭该功能，归档仅包含 npm `.tgz` 和 V1 导出清单。每个目标首次全量，有权限的用户确认整批导入后，下一次只导出新增版本。[设置、确认和故障处理](docs/v2-v1-compatible-nexus-export.md)
 
+从 V1 迁移时，可在首次快照手动选择按本地 `.tgz` 修改时间估算增量；确认完整导入后转用 SHA256，无法核实旧导入范围时仍应全量。
+
 v1 包包含 `.export-manifest.json` 和包目录下的元数据、tgz；scoped 包使用 `@scope/name/` 嵌套目录。v2 包包含 `.mirror-manifest.json` 和按 SHA256 命名的 `blobs/`，必须通过镜像同步页面导入。
 
 #### 8. 差分导入（内网）

@@ -16,6 +16,7 @@ import { DifferentialScanner } from '../src/differential-scanner';
 import IngestMiddleware from '../src/ingest-middleware';
 import { extractLegacyArchive } from '../src/mirror-core';
 import { StandaloneSnapshots } from '../src/standalone-snapshots';
+import { legacyMigrationRequest, parseLegacyCutoff } from '../src/legacy-snapshot-cutoff';
 import type { ExportManifest } from '../src/types';
 import { getWebUIHTML } from '../src/web-ui';
 
@@ -92,6 +93,139 @@ it('uses only confirmed archives as the baseline, persists state and keeps targe
   await confirm(next);
   assert.equal((await confirm(retry)).exportId, retry.exportId);
   assert.equal((await open().status(target)).snapshotId, next.exportId);
+});
+
+it('migration uses inclusive stable local mtime and any newer alias, and promotes SHA256 only after confirm', async t => {
+  const { root, snapshots, open, put, tarball } = await fixture(t);
+  const cutoff = '2025-06-15T12:00:00.000Z';
+  const migration = { source: 'manual' as const, cutoff };
+  const set = async (name: string, version: string, at: number, relative?: string, bytes?: Buffer) => {
+    const file = await put(relative ?? `${name}/${path.posix.basename(name)}-${version}.tgz`, bytes ?? await tarball(name, version, version));
+    await utimes(file, new Date(at), new Date(at));
+  };
+  const time = Date.parse(cutoff);
+  await set('demo', '1.0.0', time - 1000);
+  await set('demo', '2.0.0', time);
+  await set('demo', '3.0.0', time + 1000);
+  const aliased = await tarball('@scope/pkg', '1.0.0', 'same bytes');
+  await set('@scope/pkg', '1.0.0', time - 1000, '@scope/pkg/pkg-1.0.0.tgz', aliased);
+  await set('@scope/pkg', '1.0.0', time + 1000, '@scope%2Fpkg/pkg-1.0.0.tgz', aliased);
+
+  assert.equal((await snapshots.preview(target)).stats.totalFiles, 4);
+  const estimate = await snapshots.preview(target, migration);
+  assert.equal(estimate.legacyMigration?.inferredVersions, 1);
+  assert.deepEqual(estimate.legacyMigration?.inferredEntries.map(e => [e.packageName, e.version]), [['demo', '1.0.0']]);
+  assert.equal(estimate.stats.totalFiles, 3);
+  assert.deepEqual(estimate.files.map(file => file.path).sort(),
+    ['@scope/pkg/pkg-1.0.0.tgz', 'demo/demo-2.0.0.tgz', 'demo/demo-3.0.0.tgz']);
+  assert.equal((await open().status(target)).records.length, 0);
+  const options = { ...migration, attestPriorImport: true as const, previewFingerprint: estimate.legacyMigration!.previewFingerprint };
+  await assert.rejects(snapshots.create('other-target', randomUUID(), () => {}, options, 'admin'), /stale/);
+  await assert.rejects(snapshots.create(target, randomUUID(), () => {}, migration, 'admin'), /attestation/);
+
+  const create = () => snapshots.create(target, randomUUID(), () => {}, options, 'operator');
+  const first = await create();
+  const retry = await create();
+  assert.equal(first.snapshot?.legacyCutoff, cutoff);
+  assert.equal((await open().status(target)).snapshotId, null);
+  assert.equal((await open().status(target)).confirmedVersions, 0);
+  assert.equal((await snapshots.preview('other-target')).stats.totalFiles, 4);
+  const unpacked = path.join(root, 'migration-unpacked');
+  await mkdir(unpacked);
+  const { path: archive } = await snapshots.download(target, retry.exportId);
+  const manifest = await extractLegacyArchive(archive, unpacked);
+  assert.equal(manifest.type, 'incremental');
+  assert.equal(manifest.baseTimestamp, cutoff);
+  assert.equal(manifest.snapshot.legacyCutoff, cutoff);
+  assert.equal(manifest.snapshot.baseSnapshotId, null);
+  assert.deepEqual(manifest.files.map((file: {path:string}) => file.path).sort(), estimate.files.map(file => file.path).sort());
+  const confirm = (result: typeof first, outcome: unknown, attested?: boolean) =>
+    open().confirm(target, result.exportId, result.snapshot!.archiveSha256, outcome, 'admin', attested);
+  await assert.rejects(confirm(retry, 'partial', true), /outcome: complete/);
+  await assert.rejects(confirm(retry, 'complete'), /attesting/);
+  await confirm(retry, 'complete', true);
+  assert.equal((await confirm(retry, 'complete', true)).exportId, retry.exportId);
+  assert.equal((await open().status(target)).confirmedVersions, 4);
+  await assert.rejects(confirm(first, 'complete', true), /already been advanced/);
+  await assert.rejects(open().preview(target, migration), /already has a confirmed snapshot/);
+  assert.equal((await open().legacyCutoffs(target)).eligible, false);
+  assert.equal((await open().legacyCutoffs('other-target')).eligible, true);
+  assert.equal((await open().preview(target)).stats.totalFiles, 0);
+  await set('demo', '4.0.0', time - 5000); // Once confirmed, a newly discovered version exports even if backdated.
+  const next = await open().preview(target);
+  assert.deepEqual(next.files.map(f => f.version), ['4.0.0']);
+  assert.equal(next.legacyMigration, undefined);
+  const replaced = await put('demo/demo-1.0.0.tgz', await tarball('demo','1.0.0','different bytes'));
+  await utimes(replaced, new Date(time - 1000), new Date(time - 1000));
+  assert.equal((await open().preview(target)).conflicts[0].source, 'confirmed');
+});
+
+it('rejects stale and empty migration plans, bad old identities, and conflicts between omitted aliases', async t => {
+  const { packer, snapshots, put, tarball } = await fixture(t);
+  const cutoff = '2025-06-15T12:00:00.000Z';
+  const old = new Date(Date.parse(cutoff) - 1000), newer = new Date(Date.parse(cutoff) + 1000);
+  const migration = {source:'manual' as const, cutoff};
+  const key = 'demo/demo-1.0.0.tgz';
+  const one = await put(key, await tarball('demo','1.0.0','old'));
+  await utimes(one,old,old);
+  const preview = await snapshots.preview(target, migration);
+  assert.equal(preview.legacyMigration?.requiresFullFallback,true);
+  const opts = (estimate: typeof preview) => ({...migration,attestPriorImport:true as const,previewFingerprint:estimate.legacyMigration!.previewFingerprint});
+  await assert.rejects(snapshots.create(target,randomUUID(),()=>{}, opts(preview),'admin'), /no tarballs/);
+  assert.equal((await snapshots.status(target)).snapshotId, null);
+  const two = await put('demo/demo-2.0.0.tgz', await tarball('demo','2.0.0','new'));
+  await utimes(two,newer,newer);
+  await assert.rejects(snapshots.create(target,randomUUID(),()=>{}, opts(preview),'admin'), /stale/);
+  const current = await snapshots.preview(target,migration);
+  // A late arrival during packing is not silently absorbed or hidden behind the earlier inference.
+  const pack = packer.createExportPackage.bind(packer);
+  packer.createExportPackage = async (...args) => {
+    const result = await pack(...args);
+    await put('demo/demo-3.0.0.tgz',await tarball('demo','3.0.0','late arrival'));
+    return result;
+  };
+  const id = randomUUID();
+  await assert.rejects(snapshots.create(target,id,()=>{}, opts(current),'admin'), /tarballs changed/);
+  await assert.rejects(snapshots.download(target,id), /not found/);
+  assert.equal((await snapshots.status(target)).confirmedVersions,0);
+  await put(key,await tarball('different','1.0.0','wrong identity'));
+  await utimes(one,old,old);
+  await assert.rejects(snapshots.preview(target,migration), /identity mismatch/);
+  await put(key,await tarball('demo','1.0.0','valid again'));
+  await utimes(one,old,old);
+  const alias1=await put('@scope/demo/demo-1.0.0.tgz', await tarball('@scope/demo','1.0.0','first bytes'));
+  const alias2=await put('@scope%2Fdemo/scope-demo-1.0.0.tgz', await tarball('@scope/demo','1.0.0','second bytes'));
+  await utimes(alias1,old,old);await utimes(alias2,old,old);
+  const conflict=await snapshots.preview(target,migration);
+  assert.equal(conflict.conflicts[0].source,'alias');
+  await assert.rejects(snapshots.create(target,randomUUID(),()=>{},opts(conflict),'admin'), /content conflict/);
+});
+
+it('only suggests distinguishable V1 incremental history and always requires a zoned, non-future cutoff', async t => {
+  const { snapshots, put } = await fixture(t);
+  const cutoff = '2025-06-15T12:00:00.000Z';
+  const id = 'export-1749988800000-example';
+  const entry = {exportId:id,timestamp:cutoff,timestampMs:Date.parse(cutoff),type:'incremental',
+    baseTimestamp:'2025-06-14T12:00:00.000Z',fileCount:1,checksum:'1'.repeat(64)};
+  assert.deepEqual(await snapshots.legacyCutoffs(target), { eligible: true, candidates: [], historyUnavailable: false });
+  await put('.export-history.json','{malformed');
+  assert.deepEqual(await snapshots.legacyCutoffs(target), { eligible: true, candidates: [], historyUnavailable: true });
+  await put('.export-history.json',JSON.stringify({version:1,exports:[entry,
+    {...entry,exportId:'export-1749988800001-v2full',type:'full'},
+    {...entry,exportId:'export-1749988800002-misdated',timestampMs:0},
+    {...entry,exportId:'export-1749988800003-v2unknown',baseTimestamp:undefined}]}));
+  assert.deepEqual((await snapshots.legacyCutoffs(target)).candidates,[{exportId:id,cutoff,fileCount:1}]);
+  const history = {source:'history' as const,exportId:id};
+  assert.equal((await snapshots.preview(target,history)).legacyMigration?.cutoff,cutoff);
+  await assert.rejects(snapshots.preview(target,{...history,exportId:'export-1749988800001-v2full'}), /no longer found/);
+  await put('.export-history.json',JSON.stringify({version:1,exports:[]}));
+  await assert.rejects(snapshots.preview(target,history), /no longer found/);
+  assert.equal(parseLegacyCutoff('2025-06-15T20:00:00+08:00'),cutoff);
+  for (const malformed of ['2025-06-15T12:00:00','2025-02-30T12:00:00Z','2025-06-15T24:00:00Z','2999-01-01T00:00:00Z',null]) {
+    assert.equal(parseLegacyCutoff(malformed),undefined);
+    assert.throws(()=>legacyMigrationRequest({source:'manual',cutoff:malformed},false), /timestamp/);
+  }
+  assert.throws(()=>legacyMigrationRequest({source:'manual',cutoff},true),/attestation/);
 });
 
 it('deduplicates scoped path and filename aliases and blocks same-size, same-mtime content changes after deletion', async t => {
@@ -275,6 +409,14 @@ for (const allowlist of [false, true]) it(`routes V1 and snapshot workflows with
   const route = '/export/snapshot/' + target;
   const mirrorBefore = await (await request('/mirror/status')).json();
   assert.equal((await request('/export/preview', options)).status, 401);
+  const legacyCutoffs = route + '/legacy-cutoffs';
+  assert.equal((await request(legacyCutoffs)).status, 401);
+  assert.equal((await request(legacyCutoffs, undefined, 'invalid-token')).status, 401);
+  assert.equal((await request(legacyCutoffs, undefined, admin)).status, 200);
+  if (allowlist) assert.equal((await request(legacyCutoffs, undefined, 'user-token')).status, 403);
+  const badMigration = { ...options, legacyMigration: { source: 'manual', cutoff: '2025-01-01T00:00:00' } };
+  assert.equal((await request('/export/preview', badMigration, admin)).status, 400);
+  assert.equal((await request('/export/create', badMigration, admin)).status, 400);
   assert.equal((await request('/export/preview', options, 'invalid-token')).status, 401);
   assert.equal((await request('/export/create', options)).status, 401);
   assert.equal((await request(route)).status, 401);
@@ -346,6 +488,7 @@ it('fails closed on every snapshot route when disabled, malformed, or without Ve
     ['/export/create', options],
     ['/status/snapshot-example'],
     [snapshot],
+    [snapshot + '/legacy-cutoffs'],
     [snapshot + '/example/download'],
     [snapshot + '/example/confirm', { outcome: 'complete', archiveSha256: '0'.repeat(64) }],
   ];
@@ -388,6 +531,8 @@ it('renders snapshot mode and confirmation controls with valid browser script', 
     assert.match(getWebUIHTML({ standaloneSnapshotAdmins: value }), hidden);
   }
   assert.match(html, /Verdaccio 登录令牌/);
+  assert.match(html, /从已完整导入的 V1 继续/);
+  assert.match(html, /id="enableLegacyMigration" type="checkbox">/);
   assert.match(html, /确认已完整导入/);
   const source = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(source);

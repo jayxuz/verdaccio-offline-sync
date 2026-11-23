@@ -409,6 +409,8 @@ Scan both peers → exchange inventory JSON → reconcile → export missing art
 
 The **V1-compatible archives** card defaults to **Full Export**, which can include `package.json`. **Export V1-Compatible Package** is available by default and requires a valid Verdaccio login token; set `standaloneSnapshotAdmins` to restrict access or use an empty list to disable it. These archives contain only npm `.tgz` files and the V1 export manifest. Each target starts with a full export. After an authorized user confirms the entire import, the next export includes only new versions. [Configuration and confirmation](docs/v2-v1-compatible-nexus-export.md)
 
+For migration from V1, the first snapshot can optionally estimate a delta from local `.tgz` modification times. Only a verified import establishes the SHA256 baseline. Use a full export if prior import coverage is uncertain.
+
 v1 archives contain `.export-manifest.json` and package directories (including nested `@scope/name/`). v2 archives contain `.mirror-manifest.json` and SHA256-addressed `blobs/`; import them through the mirror UI.
 
 #### 8. Differential Import (Offline)

@@ -1018,6 +1018,16 @@ export function getWebUIHTML(config: any): string {
         <input id="exportSnapshotToken" type="password" autocomplete="off">
         <button class="btn btn-primary" type="button" onclick="loadSnapshotStatus()">刷新目标快照状态</button>
         <p id="snapshotStatus" role="status"></p>
+        <label><input id="enableLegacyMigration" type="checkbox"> 从已完整导入的 V1 继续（按本地文件修改时间估算）</label>
+        <div id="legacyMigrationOptions" class="hidden">
+          <p>仅供没有已确认 V2 快照的目标。复制、回填、时钟偏差或 V1 漏包会误判；不确定时请取消勾选并全量导出。</p>
+          <button class="btn btn-primary" type="button" onclick="loadLegacyMigrationCutoffs()">查找本地 V1 旧增量导出记录</button>
+          <p id="legacyMigrationHistoryNotice" role="status"></p>
+          <label for="legacyMigrationHistory">已核对的 V1 导出时间来源</label>
+          <select id="legacyMigrationHistory"><option value="">手工输入时间</option></select>
+          <label for="legacyMigrationCutoff">V1 截止时间（必须含时区）</label>
+          <input id="legacyMigrationCutoff" type="text" placeholder="2026-11-01T08:00:00+08:00" maxlength="29">
+        </div>
         <div id="snapshotRecords" class="package-list"></div>
       </div>
       <div class="form-group" id="exportLegacyOptions">
@@ -1055,6 +1065,12 @@ export function getWebUIHTML(config: any): string {
         </div>
         <div class="download-list" id="exportFileList" style="max-height: 200px;"></div>
         <pre id="exportSnapshotConflicts" class="hidden" style="white-space: pre-wrap; color: #a62020"></pre>
+        <div id="legacyMigrationPreview" class="hidden">
+          <p id="legacyMigrationSummary" role="status"></p>
+          <pre id="legacyMigrationOmissions" style="white-space: pre-wrap"></pre>
+          <button id="downloadLegacyMigrationOmissions" type="button" class="btn btn-primary hidden">下载完整估算省略清单（JSON）</button>
+          <label><input type="checkbox" id="legacyMigrationAttested"> 我确认同一目标已完整导入 V1 截止时间之前的应有版本，并复核了此次按时间估算的省略范围。</label>
+        </div>
       </div>
 
       <!-- 导出进度 -->
@@ -2167,6 +2183,7 @@ export function getWebUIHTML(config: any): string {
 
     let exportPollInterval = null;
     let currentExportPreview = null;
+    let currentMigrationPreview = null;
 
     function snapshotHeaders(headers = {}) {
       const token = document.getElementById('exportSnapshotToken').value.trim();
@@ -2188,9 +2205,15 @@ export function getWebUIHTML(config: any): string {
         const data = await response.json();
         if (!data.success) throw Error(data.error);
         if (target !== document.getElementById('exportSnapshotTarget').value.trim()) return;
+        const migrate = document.getElementById('enableLegacyMigration');
+        migrate.disabled = Boolean(data.snapshotId);
+        if (data.snapshotId && migrate.checked) {
+          migrate.checked = false;
+          migrate.dispatchEvent(new Event('change'));
+        }
         notice.textContent = data.snapshotId
           ? '当前基线 ' + data.snapshotId + '，已确认 ' + data.confirmedVersions + ' 个版本'
-          : '尚无已确认的快照，下次导出为全量。';
+          : '尚无已确认的快照。默认全量，或明确选择从 V1 迁移。';
         const labels = {
           preparing: '准备中', failed: '失败', empty: '无新增', pending: '待确认',
           confirmed: '已确认', superseded: '基线已前进'
@@ -2205,6 +2228,12 @@ export function getWebUIHTML(config: any): string {
             const error = document.createElement('div');
             error.textContent = record.error;
             details.append(error);
+          }
+          if (record.legacyMigration) {
+            const evidence = document.createElement('div');
+            evidence.textContent = 'V1 截止 ' + record.legacyMigration.cutoff + '；估算覆盖 ' +
+              record.legacyMigration.inferredVersions + ' 个旧版本';
+            details.append(evidence);
           }
           if (record.archive) {
             const hash = document.createElement('div');
@@ -2232,7 +2261,45 @@ export function getWebUIHTML(config: any): string {
       }
     }
 
+    async function loadLegacyMigrationCutoffs() {
+      const target = document.getElementById('exportSnapshotTarget').value.trim();
+      const select = document.getElementById('legacyMigrationHistory');
+      const notice = document.getElementById('legacyMigrationHistoryNotice');
+      select.replaceChildren(new Option('手工输入时间', ''));
+      document.getElementById('legacyMigrationCutoff').disabled = false;
+      currentExportPreview = null;
+      currentMigrationPreview = null;
+      document.getElementById('createExportBtn').disabled = true;
+      if (!target) { notice.textContent = '请先填写目标通道。'; return; }
+      try {
+        const response = await fetch(API_BASE + '/export/snapshot/' + encodeURIComponent(target) + '/legacy-cutoffs',
+          { headers: snapshotHeaders() });
+        const data = await response.json();
+        if (!data.success) throw Error(data.error);
+        if (target !== document.getElementById('exportSnapshotTarget').value.trim()) return;
+        if (!data.eligible) {
+          notice.textContent = '该目标已有 V2 确认基线。请取消迁移选项，直接使用快照增量。';
+          return;
+        }
+        for (const candidate of data.candidates) {
+          select.append(new Option(candidate.cutoff + ' · ' + candidate.exportId, candidate.exportId));
+        }
+        notice.textContent = data.candidates.length
+          ? '记录只提供时间，不能证明该目标已完整导入。请显式选择经过核对的记录。'
+          : data.historyUnavailable ? '无法读取可用旧记录，可手工填写已核实时间。'
+          : '没有可识别的 V1 旧增量记录；若此前用的是 V1 全量，请填写已核实时间。';
+      } catch (error) {
+        if (target === document.getElementById('exportSnapshotTarget').value.trim()) {
+          notice.textContent = '读取 V1 历史失败：' + error.message;
+        }
+      }
+    }
+
     async function confirmSnapshot(target, record, button) {
+      const migration = record.legacyMigration;
+      if (migration && !window.confirm('此迁移会在同一目标 ' + target + ' 把截至 ' +
+        migration.cutoff + ' 之前已覆盖的 ' + migration.inferredVersions +
+        ' 个推定版本纳入 SHA256 基线。请确认该目标此前已完整导入这些 V1 版本。')) return;
       const archiveSha256 = window.prompt('确认目标 ' + target +
         ' 已完整导入此归档。请输入实际导入归档的 SHA256（部分或未知结果请取消）。');
       if (!archiveSha256?.trim()) return;
@@ -2242,7 +2309,7 @@ export function getWebUIHTML(config: any): string {
         const response = await fetch(API_BASE + route, {
           method: 'POST',
           headers: snapshotHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ outcome: 'complete', archiveSha256: archiveSha256.trim() })
+          body: JSON.stringify({ outcome: 'complete', archiveSha256: archiveSha256.trim(), ...(migration ? { attestPriorImport: true } : {}) })
         });
         const data = await response.json();
         if (!data.success) throw Error(data.error);
@@ -2324,7 +2391,14 @@ export function getWebUIHTML(config: any): string {
           addLog('请输入目标通道', 'warning');
           return null;
         }
-        return { mode: 'standalone-snapshot', target, since: 'last' };
+        const request = { mode: 'standalone-snapshot', target, since: 'last' };
+        if (document.getElementById('enableLegacyMigration').checked) {
+          const history = document.getElementById('legacyMigrationHistory').value;
+          const cutoff = document.getElementById('legacyMigrationCutoff').value.trim();
+          if (!history && !cutoff) { addLog('请选择已核实的 V1 记录或输入带时区的截止时间', 'warning'); return null; }
+          request.legacyMigration = history ? { source: 'history', exportId: history } : { source: 'manual', cutoff };
+        }
+        return request;
       }
       const includeMetadata = document.getElementById('exportIncludeMetadata').checked;
       return { includeMetadata };
@@ -2351,6 +2425,7 @@ export function getWebUIHTML(config: any): string {
         if (data.success) {
           if (JSON.stringify(request) !== JSON.stringify(getExportRequest())) return;
           currentExportPreview = request;
+          currentMigrationPreview = data.legacyMigration || null;
           showExportPreview(data);
           addLog('预览完成: ' + data.stats.totalFiles + ' 个文件, ' + formatSize(data.stats.totalSize), 'success');
         } else {
@@ -2375,6 +2450,33 @@ export function getWebUIHTML(config: any): string {
         conflict.expected.checksum + ' / ' + conflict.actual.checksum
       ).join('\\n');
 
+      const migrationArea = document.getElementById('legacyMigrationPreview');
+      const migrationAttested = document.getElementById('legacyMigrationAttested');
+      const migrationSummary = document.getElementById('legacyMigrationSummary');
+      migrationArea.classList.toggle('hidden', !data.legacyMigration);
+      migrationAttested.checked = false;
+      migrationAttested.disabled = !data.legacyMigration || data.legacyMigration.requiresFullFallback || Boolean(data.conflicts?.length);
+      const migrationOmissions = document.getElementById('legacyMigrationOmissions');
+      const migrationDownload = document.getElementById('downloadLegacyMigrationOmissions');
+      const omitted = data.legacyMigration?.inferredEntries || [];
+      migrationOmissions.textContent = omitted.slice(0, 20).map(entry => entry.packageName + '@' + entry.version).join('\\n') +
+        (omitted.length > 20 ? '\\n… 仅展示前 20 项，可下载完整清单。' : '');
+      migrationDownload.classList.toggle('hidden', omitted.length === 0);
+      migrationDownload.onclick = () => {
+        const raw = JSON.stringify({ target: data.target, cutoff: data.legacyMigration?.cutoff, omitted }, null, 2);
+        const url = URL.createObjectURL(new Blob([raw], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'v1-migration-omissions.json';
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      if (data.legacyMigration) {
+        migrationSummary.textContent = 'UTC 截止时间 ' + data.legacyMigration.cutoff + '；' +
+          data.stats.totalFiles + ' 个版本将导出，' + data.legacyMigration.inferredVersions +
+          ' 个旧版本估算为已覆盖（不会随包发送）。' + (data.legacyMigration.requiresFullFallback
+            ? '此次没有增量，不会建立基线；有新文件再试，或取消迁移选项执行全量。' : '');
+      }
       const fileList = document.getElementById('exportFileList');
       if (data.files.length === 0) {
         fileList.innerHTML = '<p style="text-align: center; padding: 20px; color: #666;">没有需要导出的文件</p>';
@@ -2396,7 +2498,7 @@ export function getWebUIHTML(config: any): string {
           fileList.innerHTML += '<p style="text-align: center; padding: 10px; color: #666;">... 还有 ' +
             (data.files.length - 30) + ' 个文件</p>';
         }
-        document.getElementById('createExportBtn').disabled = Boolean(data.conflicts?.length);
+        document.getElementById('createExportBtn').disabled = Boolean(data.legacyMigration || data.conflicts?.length);
       }
 
       document.getElementById('exportPreview').classList.remove('hidden');
@@ -2408,6 +2510,11 @@ export function getWebUIHTML(config: any): string {
     async function createExport() {
       const request = getExportRequest();
       if (!request || JSON.stringify(request) !== JSON.stringify(currentExportPreview)) return;
+      if (request.legacyMigration) {
+        if (!currentMigrationPreview || !document.getElementById('legacyMigrationAttested').checked) return;
+        request.legacyMigration.attestPriorImport = true;
+        request.legacyMigration.previewFingerprint = currentMigrationPreview.previewFingerprint;
+      }
 
       try {
         document.getElementById('createExportBtn').disabled = true;
@@ -2540,11 +2647,30 @@ export function getWebUIHTML(config: any): string {
         currentExportPreview = null;
       });
     });
-    for (const id of ['exportSnapshotTarget', 'exportIncludeMetadata']) {
+    document.getElementById('legacyMigrationAttested').addEventListener('change', event => {
+      document.getElementById('createExportBtn').disabled = !event.target.checked || !currentExportPreview || !currentMigrationPreview;
+    });
+    for (const id of ['enableLegacyMigration', 'legacyMigrationHistory', 'legacyMigrationCutoff', 'exportSnapshotTarget', 'exportIncludeMetadata']) {
       document.getElementById(id).addEventListener('change', () => {
         document.getElementById('createExportBtn').disabled = true;
         currentExportPreview = null;
+        currentMigrationPreview = null;
+        document.getElementById('legacyMigrationAttested').checked = false;
+        document.getElementById('legacyMigrationPreview').classList.add('hidden');
+        if (id === 'enableLegacyMigration') {
+          document.getElementById('legacyMigrationOptions').classList.toggle('hidden', !document.getElementById(id).checked);
+        }
+        if (id === 'legacyMigrationHistory') {
+          document.getElementById('legacyMigrationCutoff').disabled = Boolean(document.getElementById(id).value);
+        }
         if (id === 'exportSnapshotTarget') {
+          document.getElementById('enableLegacyMigration').disabled = false;
+          document.getElementById('enableLegacyMigration').checked = false;
+          document.getElementById('legacyMigrationOptions').classList.add('hidden');
+          document.getElementById('legacyMigrationHistory').replaceChildren(new Option('手工输入时间', ''));
+          document.getElementById('legacyMigrationCutoff').value = '';
+          document.getElementById('legacyMigrationCutoff').disabled = false;
+          document.getElementById('legacyMigrationHistoryNotice').textContent = '';
           document.getElementById('snapshotStatus').textContent = '';
           document.getElementById('snapshotRecords').replaceChildren();
         }

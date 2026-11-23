@@ -5,9 +5,10 @@ import path from 'path';
 import pLimit from 'p-limit';
 import { DifferentialPacker } from './differential-packer';
 import { DifferentialScanner } from './differential-scanner';
-import { normalizedDirectory, safeRelative, stableRead } from './mirror-core';
+import { normalizedDirectory, safeRelative, stableRead, tarballIdentity } from './mirror-core';
 import { extractTarballVersion } from './tarball-version';
-import { ExportManifest, ExportProgress, ExportRecord, ScannedFile } from './types';
+import { ExportManifest, ExportProgress, ExportRecord, LegacySnapshotMigrationRequest, ScannedFile } from './types';
+import { LegacyCutoff, readLegacyCutoffHints } from './legacy-snapshot-cutoff';
 
 interface FileFingerprint {
   checksum: string;
@@ -47,12 +48,14 @@ interface Attempt {
   target: string;
   createdAt: string;
   baseSnapshotId: string | null;
+  legacyMigration?: LegacyCutoff & { inferredVersions: number; attestedBy: string };
 }
 
 type SavedArchive = Attempt & {
   status: 'pending';
   archive: ExportRecord & { checksum: string; fileSize: number };
-  // A candidate adds these entries to its predecessor. Confirmed entries are never removed.
+  // A candidate adds entries to its predecessor. A first migration also seeds the explicitly
+  // attested pre-cutoff identities. No candidate contributes until its archive is confirmed.
   entries: SnapshotEntry[];
 };
 
@@ -145,32 +148,73 @@ export class StandaloneSnapshots {
     private readonly concurrency: number
   ) {}
 
-  async preview(target: string) {
+  async legacyCutoffs(target: string) {
     const base = await this.baseline(target);
-    const plan = await this.plan(base.entries);
+    if (base.id) return { eligible: false, candidates: [], historyUnavailable: false };
+    return { eligible: true, ...await readLegacyCutoffHints(this.storagePath) };
+  }
+
+  private async resolveMigration(base: string | null, request?: LegacySnapshotMigrationRequest): Promise<LegacyCutoff | undefined> {
+    if (!request) return undefined;
+    if (base) throw new SnapshotError('Target already has a confirmed snapshot; use the normal SHA256 incremental export', 409);
+    if (request.source === 'manual') return { source: 'manual', cutoff: request.cutoff };
+    const hint = (await readLegacyCutoffHints(this.storagePath)).candidates.find(candidate => candidate.exportId === request.exportId);
+    if (!hint) throw new SnapshotError('Eligible V1 export history no longer found; use an explicit timestamp or a full export', 409);
+    return { source: 'history', cutoff: hint.cutoff, historyExportId: hint.exportId };
+  }
+
+  private migrationFingerprint(target: string, migration: LegacyCutoff, observed: Array<[string, string, number, string]>) {
+    return createHash('sha256').update(JSON.stringify([target, migration, observed])).digest('hex');
+  }
+
+  async preview(target: string, options?: LegacySnapshotMigrationRequest) {
+    const base = await this.baseline(target);
+    const migration = await this.resolveMigration(base.id, options);
+    const plan = await this.plan(base.entries, migration?.cutoff);
     return {
       target,
       baseSnapshotId: base.id,
-      type: base.id ? 'incremental' : 'full',
+      type: base.id || migration ? 'incremental' : 'full',
       files: this.scanner.scannedFilesToEntries(plan.files).map(file => ({
         ...file,
         checksum: plan.fingerprints.get(file.path)!.checksum
       })),
       stats: this.scanner.calculateStats(plan.files),
-      conflicts: plan.conflicts
+      conflicts: plan.conflicts,
+      ...(migration && {
+        legacyMigration: {
+          ...migration,
+          inferredVersions: plan.inferredVersions,
+          inferredEntries: plan.inferredEntries,
+          previewFingerprint: this.migrationFingerprint(target, migration, plan.observedMigration),
+          requiresFullFallback: !plan.files.length
+        }
+      })
     };
   }
 
-  async create(target: string, exportId: string, onProgress: (progress: ExportProgress) => void) {
+  async create(target: string, exportId: string, onProgress: (progress: ExportProgress) => void,
+    options?: LegacySnapshotMigrationRequest, username?: string) {
     const dir = this.directory(target);
     await this.checkDirectory(target, true);
     const file = this.recordPath(target, exportId);
     const attempt: Attempt = { exportId, target, createdAt: new Date().toISOString(), baseSnapshotId: null };
     await publishJSON(file, { ...attempt, status: 'preparing' }, true);
+    let uncommittedArchive: string | undefined;
     try {
       const base = await this.baseline(target);
       attempt.baseSnapshotId = base.id;
-      const plan = await this.plan(base.entries);
+      const migration = await this.resolveMigration(base.id, options);
+      const plan = await this.plan(base.entries, migration?.cutoff);
+      if (migration) {
+        if (options?.attestPriorImport !== true || !username) {
+          throw new SnapshotError('V1 migration requires explicit prior coverage attestation for this target', 400);
+        }
+        if (options.previewFingerprint !== this.migrationFingerprint(target, migration, plan.observedMigration)) {
+          throw new SnapshotError('V1 migration preview is stale; review the current included and omitted versions again', 409);
+        }
+        attempt.legacyMigration = { ...migration, inferredVersions: plan.inferredVersions, attestedBy: username };
+      }
       if (plan.conflicts.length) {
         const first = plan.conflicts[0];
         throw new SnapshotError(
@@ -178,16 +222,34 @@ export class StandaloneSnapshots {
         );
       }
       if (!plan.files.length) {
+        if (migration) throw new SnapshotError('V1 migration produced no tarballs; no baseline created. Wait for new files or use the full export', 409);
         await publishJSON(file, { ...attempt, status: 'empty' });
         return { exportId, filename: null, downloadUrl: null, fileSize: 0, stats: this.scanner.calculateStats([]) };
       }
 
       const trace: NonNullable<ExportManifest['snapshot']> = {
-        mode: 'standalone-snapshot', target, baseSnapshotId: base.id, snapshotId: exportId
+        mode: 'standalone-snapshot', target, baseSnapshotId: base.id, snapshotId: exportId,
+        ...(migration && { legacyCutoff: migration.cutoff })
       };
       const result = await this.packer.createExportPackage(plan.files, {
-        exportId, outputDir: dir, onProgress, snapshot: { trace, fingerprints: plan.fingerprints }
+        exportId, outputDir: dir, onProgress, snapshot: { trace, fingerprints: plan.fingerprints },
+        ...(migration && { baseTimestamp: new Date(migration.cutoff) })
       });
+      uncommittedArchive = path.join(dir, result.filename);
+      if (migration) {
+        const latest = await this.scanner.scanModifiedFiles({ includeMetadata: false, standaloneSnapshot: true });
+        const expectedPaths = new Set(plan.observedMigration.map(([relative]) => relative));
+        if (latest.length !== expectedPaths.size || latest.some(file =>
+            !expectedPaths.has(path.relative(this.storagePath, file.absolutePath)))) {
+          throw new SnapshotError('Local tarballs changed during the V1 migration; preview the storage again', 409);
+        }
+        // A file replaced during packing must not turn an omitted identity into an inferred baseline.
+        const limit = pLimit(Math.max(1, Math.min(50, Math.floor(this.concurrency))));
+        await Promise.all(plan.revalidateMigration.map(check => limit(check)));
+        if ((await this.baseline(target)).id !== base.id) {
+          throw new SnapshotError('Target acquired a confirmed snapshot while creating the migration export', 409);
+        }
+      }
       const archive = {
         ...this.packer.createExportRecord(exportId, result.filename, result.checksum, result.manifest),
         checksum: result.checksum,
@@ -195,6 +257,7 @@ export class StandaloneSnapshots {
       };
       const record: SavedArchive = { ...attempt, status: 'pending', archive, entries: plan.entries };
       await publishJSON(file, record);
+      uncommittedArchive = undefined;
       return {
         exportId,
         filename: archive.filename,
@@ -205,6 +268,7 @@ export class StandaloneSnapshots {
       };
     } catch (error) {
       if ((await readJSON<SavedAttempt>(file))?.status === 'preparing') {
+        if (uncommittedArchive) await rm(uncommittedArchive, { force: true });
         await publishJSON(file, {
           ...attempt,
           status: 'failed',
@@ -256,13 +320,16 @@ export class StandaloneSnapshots {
     throw new SnapshotError('Snapshot archive is missing or not a regular file', 404);
   }
 
-  async confirm(target: string, exportId: string, archiveSha256: unknown, outcome: unknown, username: string) {
+  async confirm(target: string, exportId: string, archiveSha256: unknown, outcome: unknown, username: string, attestPriorImport?: unknown) {
     if (outcome !== 'complete') throw new SnapshotError('Confirmation requires outcome: complete', 400);
     if (typeof archiveSha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(archiveSha256)) {
       throw new SnapshotError('Confirmation requires the SHA256 of the imported archive', 400);
     }
     await this.checkDirectory(target);
     const record = await this.archive(target, exportId);
+    if (record.legacyMigration && attestPriorImport !== true) {
+      throw new SnapshotError('Confirm V1 migration requires attesting same-target coverage through its cutoff', 400);
+    }
     if (record.archive.checksum !== archiveSha256.toLowerCase()) {
       throw new SnapshotError('Archive SHA256 does not match', 409);
     }
@@ -378,42 +445,86 @@ export class StandaloneSnapshots {
     }
   }
 
-  private async plan(confirmed: Map<string, SnapshotEntry>) {
+  private async plan(confirmed: Map<string, SnapshotEntry>, cutoff?: string) {
     const sources = await this.scanner.scanModifiedFiles({ includeMetadata: false, standaloneSnapshot: true });
     sources.sort((a, b) => a.relativePath.localeCompare(b.relativePath) || a.absolutePath.localeCompare(b.absolutePath));
     const hashLimit = pLimit(Math.max(1, Math.min(50, Math.floor(this.concurrency))));
+    const observedMigration: Array<[string, string, number, string]> = [];
+    const revalidateMigration: Array<() => Promise<void>> = [];
+    const cutoffNs = cutoff ? BigInt(Date.parse(cutoff)) * 1_000_000n : undefined;
+    const describe = (stat: Awaited<ReturnType<typeof migrationStat>>) =>
+      [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
     const observed = await Promise.all(sources.map(file => hashLimit(async () => {
       const identity = storageTarballIdentity(file);
+      const before = cutoffNs !== undefined ? await migrationStat(file.absolutePath) : undefined;
       const fingerprint = await fingerprintExportFile(file.absolutePath);
-      const filename = `${path.posix.basename(identity.packageName)}-${identity.version}.tgz`;
-      const relativePath = `${identity.packageName}/${filename}`;
+      if (before) {
+        // Omitted tarballs never reach the packer, so validate their internal identity here as well.
+        if (before.mtimeNs < cutoffNs!) {
+          await tarballIdentity(file.absolutePath, { package: identity.packageName, version: identity.version }, 20 * 1024 ** 3);
+        }
+        const expected = describe(before);
+        const check = async () => {
+          if (describe(await migrationStat(file.absolutePath)) !== expected) {
+            throw new SnapshotError('A source tarball changed during the V1 migration; preview the storage again', 409);
+          }
+        };
+        await check();
+        return {
+          file: { ...file, ...identity, relativePath: `${identity.packageName}/${path.posix.basename(identity.packageName)}-${identity.version}.tgz`,
+            size: fingerprint.size, mtime: new Date(Number(before.mtimeNs / 1_000_000n)) },
+          entry: { ...identity, ...fingerprint }, mtimeNs: before.mtimeNs,
+          sourcePath: path.relative(this.storagePath, file.absolutePath), check
+        };
+      }
       return {
-        file: { ...file, ...identity, relativePath, size: fingerprint.size },
-        entry: { ...identity, ...fingerprint }
+        file: { ...file, ...identity, relativePath: `${identity.packageName}/${path.posix.basename(identity.packageName)}-${identity.version}.tgz`,
+          size: fingerprint.size },
+        entry: { ...identity, ...fingerprint }, mtimeNs: undefined, sourcePath: undefined, check: undefined
       };
     })));
-    const seen = new Map<string, SnapshotEntry>();
+    const seen = new Map<string, { file: ScannedFile; entry: SnapshotEntry; included: boolean }>();
     const conflicts: SnapshotConflict[] = [];
     const entries: SnapshotEntry[] = [];
     const files: ScannedFile[] = [];
     const fingerprints = new Map<string, FileFingerprint>();
-    for (const { file, entry } of observed) {
+    const inferredEntries: SnapshotEntry[] = [];
+    for (const { file, entry, mtimeNs, sourcePath, check } of observed) {
       const key = entryKey(entry);
       const fromTarget = confirmed.get(key);
-      const expected = fromTarget ?? seen.get(key);
+      const prior = seen.get(key);
+      const expected = fromTarget ?? prior?.entry;
+      const included = cutoffNs === undefined || mtimeNs! >= cutoffNs;
+      if (mtimeNs !== undefined) {
+        observedMigration.push([sourcePath!, entry.checksum, entry.size, mtimeNs.toString()]);
+        revalidateMigration.push(check!);
+      }
       if (expected) {
         if (!matches(expected, entry)) {
           const { packageName, version, checksum, size } = entry;
           conflicts.push({ packageName, version, expected: { checksum: expected.checksum, size: expected.size },
             actual: { checksum, size }, source: fromTarget ? 'confirmed' : 'alias' });
+        } else if (prior && included && !prior.included) {
+          // A newer matching alias conservatively ships the identity rather than inferring it.
+          seen.set(key, { file, entry, included });
         }
         continue;
       }
-      seen.set(key, entry);
+      seen.set(key, { file, entry, included });
+    }
+    for (const { file, entry, included } of seen.values()) {
       entries.push(entry);
+      if (!included) { inferredEntries.push(entry); continue; }
       files.push(file);
       fingerprints.set(file.relativePath, entry);
     }
-    return { files, entries, fingerprints, conflicts };
+    return { files, entries, fingerprints, conflicts, inferredVersions: inferredEntries.length, inferredEntries,
+      observedMigration, revalidateMigration };
   }
+}
+
+async function migrationStat(p: string) {
+  const stat = await lstat(p, { bigint: true });
+  if (!stat.isFile()) throw new SnapshotError('V1 migration requires regular local tarballs', 409);
+  return stat;
 }
