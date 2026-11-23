@@ -3,9 +3,11 @@
  * 提供简单的管理界面用于触发功能和查看日志
  */
 
+import { snapshotAccessPolicy } from './snapshot-access-policy';
+
 export function getWebUIHTML(config: any): string {
   const title = config?.title || 'Verdaccio Offline Sync';
-  const snapshotEnabled = Array.isArray(config?.standaloneSnapshotAdmins) && config.standaloneSnapshotAdmins.length > 0;
+  const snapshotEnabled = snapshotAccessPolicy(config?.standaloneSnapshotAdmins).mode !== 'disabled';
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1012,7 +1014,7 @@ export function getWebUIHTML(config: any): string {
       <div class="form-group hidden" id="exportSnapshotOptions">
         <label for="exportSnapshotTarget">目标通道</label>
         <input id="exportSnapshotTarget" type="text" maxlength="64" placeholder="offline-npm">
-        <label for="exportSnapshotToken">Verdaccio 管理员令牌</label>
+        <label for="exportSnapshotToken">Verdaccio 登录令牌</label>
         <input id="exportSnapshotToken" type="password" autocomplete="off">
         <button class="btn btn-primary" type="button" onclick="loadSnapshotStatus()">刷新目标快照状态</button>
         <p id="snapshotStatus" role="status"></p>

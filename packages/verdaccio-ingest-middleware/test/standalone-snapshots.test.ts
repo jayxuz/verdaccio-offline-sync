@@ -229,13 +229,13 @@ it('keeps V1 manifest and import compatibility for full and incremental tarball-
   assert.equal((await handler.importPackage(archive, { rebuildMetadata: false })).success, true);
 });
 
-it('routes V1 and snapshot workflows and authorizes snapshot operations through Verdaccio auth', async t => {
+for (const allowlist of [false, true]) it(`routes V1 and snapshot workflows with ${allowlist ? 'an allowlist' : 'default Verdaccio authentication'}`, async t => {
   const { root, storage, put, tarball, snapshots } = await fixture(t);
   const stored = await put('demo/demo-1.0.0.tgz', await tarball('demo', '1.0.0', 'demo'));
   await utimes(stored, new Date(0), new Date(0));
   await put('demo/package.json', JSON.stringify({ name: 'demo', versions: { '1.0.0': {} } }));
   const app = express();
-  const middleware = new IngestMiddleware({ enabled: true, standaloneSnapshotAdmins: ['release-admin'] },
+  const middleware = new IngestMiddleware({ enabled: true, ...(allowlist ? { standaloneSnapshotAdmins: ['release-admin'] } : {}) },
     { config: { storage }, logger } as any);
   middleware.register_middlewares(app, {
     apiJWTmiddleware: () => (req: any, _res: any, next: () => void) => {
@@ -271,11 +271,14 @@ it('routes V1 and snapshot workflows and authorizes snapshot operations through 
     throw new Error('export task timed out');
   };
   const options = { mode: 'standalone-snapshot', target, since: 'last' };
-  const admin = 'admin-token';
+  const admin = allowlist ? 'admin-token' : 'user-token';
   const route = '/export/snapshot/' + target;
   const mirrorBefore = await (await request('/mirror/status')).json();
   assert.equal((await request('/export/preview', options)).status, 401);
-  assert.equal((await request('/export/create', options, 'user-token')).status, 403);
+  assert.equal((await request('/export/preview', options, 'invalid-token')).status, 401);
+  assert.equal((await request('/export/create', options)).status, 401);
+  assert.equal((await request(route)).status, 401);
+  if (allowlist) assert.equal((await request('/export/create', options, 'user-token')).status, 403);
   for (const since of ['last', '2025-01-01T00:00:00.000Z']) {
     const response = await request('/export/preview', { since });
     assert.equal(response.status, 200);
@@ -310,22 +313,81 @@ it('routes V1 and snapshot workflows and authorizes snapshot operations through 
   assert.equal(task.status, 'completed', task.error);
   const archive = route + '/' + started.exportId;
   assert.equal((await request(archive + '/download')).status, 401);
+  assert.equal((await request(archive + '/confirm', { outcome: 'complete', archiveSha256: '0'.repeat(64) })).status, 401);
   const downloaded = await request(archive + '/download', undefined, admin);
   assert.equal(downloaded.status, 200);
   const archiveSha256 = sha256(Buffer.from(await downloaded.arrayBuffer()));
   const status = await (await request(route, undefined, admin)).json() as any;
   assert.equal(status.snapshotId, null);
   assert.equal(status.records[0].archive.checksum, archiveSha256);
-  assert.equal((await request(archive + '/confirm', { outcome: 'complete', archiveSha256 }, 'user-token')).status, 403);
+  if (allowlist) assert.equal((await request(archive + '/confirm', { outcome: 'complete', archiveSha256 }, 'user-token')).status, 403);
   assert.equal((await request(archive + '/confirm', { outcome: 'partial', archiveSha256 }, admin)).status, 400);
   assert.equal((await request(archive + '/confirm', { outcome: 'complete', archiveSha256 }, admin)).status, 200);
   assert.equal((await snapshots.status(target)).snapshotId, started.exportId);
   assert.deepEqual(await (await request('/mirror/status')).json(), mirrorBefore);
 });
 
+it('fails closed on every snapshot route when disabled, malformed, or without Verdaccio auth', async t => {
+  const { storage } = await fixture(t);
+  const scenarios = [
+    { value: [], available: true },
+    { value: null, available: true },
+    { value: 'user', available: true },
+    { value: ['user', false], available: true },
+    { value: [' user '], available: true },
+    { value: [''], available: true },
+    { value: undefined, available: false },
+    { value: ['user'], available: false },
+  ];
+  const options = { mode: 'standalone-snapshot', target };
+  const snapshot = '/export/snapshot/' + target;
+  const endpoints: Array<[string, object?]> = [
+    ['/export/preview', options],
+    ['/export/create', options],
+    ['/status/snapshot-example'],
+    [snapshot],
+    [snapshot + '/example/download'],
+    [snapshot + '/example/confirm', { outcome: 'complete', archiveSha256: '0'.repeat(64) }],
+  ];
+  for (const { value, available } of scenarios) {
+    const app = express();
+    // Even a prepopulated remote_user cannot substitute for an auth provider.
+    app.use((req: any, _res, next) => { req.remote_user = { name: 'user' }; next(); });
+    const middleware = new IngestMiddleware({ enabled: true, standaloneSnapshotAdmins: value } as any,
+      { config: { storage }, logger } as any);
+    middleware.register_middlewares(app, available ? {
+      apiJWTmiddleware: () => { throw new Error('Disabled mode must not call auth'); }
+    } : undefined, {});
+    const server = app.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    try {
+      for (const [endpoint, body] of endpoints) {
+        const res = await fetch(`http://127.0.0.1:${address.port}/_/ingest${endpoint}`, {
+          method: body ? 'POST' : 'GET',
+          headers: { Authorization: 'Bearer user-token', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+          body: body && JSON.stringify(body),
+        });
+        assert.equal(res.status, 403, JSON.stringify({ value, available, endpoint }));
+        await res.arrayBuffer();
+      }
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  }
+});
+
 it('renders snapshot mode and confirmation controls with valid browser script', () => {
-  const html = getWebUIHTML({ standaloneSnapshotAdmins: ['admin'] });
-  assert.match(html, /class="option-row ">\s*<label><input[^>]*value="snapshot"/);
+  const visible = /class="option-row ">\s*<label><input[^>]*value="snapshot"/;
+  const hidden = /class="option-row hidden">\s*<label><input[^>]*value="snapshot"/;
+  const html = getWebUIHTML({});
+  assert.match(html, visible);
+  assert.match(getWebUIHTML({ standaloneSnapshotAdmins: ['admin'] }), visible);
+  for (const value of [[], null, 'admin', ['admin', 123], ['']]) {
+    assert.match(getWebUIHTML({ standaloneSnapshotAdmins: value }), hidden);
+  }
+  assert.match(html, /Verdaccio 登录令牌/);
   assert.match(html, /确认已完整导入/);
   const source = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(source);

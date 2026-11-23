@@ -47,9 +47,9 @@ English | [中文](./README.md)
 - **Integrity Verification** - Auto-validates tarball SHA-1 checksums after download to prevent corrupt packages from polluting local cache; verifies file integrity during local version resolution and excludes checksum failures from returned metadata while preserving the files for inspection and repair
 - **Integrity Check & Repair** - One-click scan for incomplete packages that have metadata but zero tarballs (produced by unconfirmed analysis pre-writes, proxy metadata caching, etc.), smartly selects latest, per-major newest, and dependency-hit versions to re-download, with 404 classification and retry support
 
-## Docker image 2.0.1
+## Docker image 2.0.2
 
-`jayxuz/verdaccio-offline-sync:2.0.1` (`linux/amd64`) includes ingest middleware 2.0.1. In the V2 management UI, **Export V1-Compatible Package** creates an archive of npm `.tgz` files and the V1 export manifest. Each target starts with a full export. After an administrator confirms the entire import, subsequent exports include only new versions. Legacy requests with `since` (including `last`) still export the full scope. [V1-compatible export guide](docs/v2-v1-compatible-nexus-export.md)
+`jayxuz/verdaccio-offline-sync:2.0.2` (`linux/amd64`) includes ingest middleware 2.0.2. In the V2 management UI, **Export V1-Compatible Package** creates an archive of npm `.tgz` files and the V1 export manifest. Each target starts with a full export. After an authorized user confirms the entire import, subsequent exports include only new versions. Legacy requests with `since` (including `last`) still export the full scope. [V1-compatible export guide](docs/v2-v1-compatible-nexus-export.md)
 
 ## Upgrading to 2.0.0
 
@@ -113,7 +113,7 @@ docker run -it --name verdaccio \
   -p 4873:4873 \
   -v $V_PATH/conf:/verdaccio/conf \
   -v $V_PATH/storage:/verdaccio/storage \
-  jayxuz/verdaccio-offline-sync:2.0.1
+  jayxuz/verdaccio-offline-sync:2.0.2
 ```
 
 Directory structure:
@@ -407,7 +407,7 @@ Use `/_/ingest/mirror/ui` online and `/_/healer/mirror/ui` offline. The offline 
 
 Scan both peers → exchange inventory JSON → reconcile → export missing artifacts → import and verify at the target → return the receipt → accept it at the source and return the acknowledgment → accept the acknowledgment at the target. Conflicting content for the same package/version blocks the transfer; peer-only artifacts are retained. Reverse peer roles to synchronize in the other direction.
 
-The **V1-compatible archives** card defaults to **Full Export**, which can include `package.json`. Enable the administrator allowlist to choose **Export V1-Compatible Package**. These archives contain only npm `.tgz` files and the V1 export manifest. Each target starts with a full export. After an administrator confirms the entire import, the next export includes only new versions. [Configuration and confirmation](docs/v2-v1-compatible-nexus-export.md)
+The **V1-compatible archives** card defaults to **Full Export**, which can include `package.json`. **Export V1-Compatible Package** is available by default and requires a valid Verdaccio login token; set `standaloneSnapshotAdmins` to restrict access or use an empty list to disable it. These archives contain only npm `.tgz` files and the V1 export manifest. Each target starts with a full export. After an authorized user confirms the entire import, the next export includes only new versions. [Configuration and confirmation](docs/v2-v1-compatible-nexus-export.md)
 
 v1 archives contain `.export-manifest.json` and package directories (including nested `@scope/name/`). v2 archives contain `.mirror-manifest.json` and SHA256-addressed `blobs/`; import them through the mirror UI.
 

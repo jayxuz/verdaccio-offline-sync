@@ -47,9 +47,9 @@
 - **完整性校验** - 下载后自动校验 tarball SHA-1，防止损坏包污染本地缓存；本地版本解析时同步校验文件完整性，从返回元数据中排除校验失败的版本，保留原文件供检查或修复
 - **完整性检查与修复** - 一键扫描"有元数据但零 tarball"的残缺包（analyze 预写元数据未确认下载、代理元数据缓存等场景产生），智能选取 latest、各大版本最新及被本地依赖命中的版本补下载，404 版本自动分类且支持失败重试
 
-## 2.0.1 Docker 镜像
+## 2.0.2 Docker 镜像
 
-`jayxuz/verdaccio-offline-sync:2.0.1`（`linux/amd64`）内含摄取插件 2.0.1。V2 管理页新增「导出 V1 兼容包」，归档包含 npm `.tgz` 和 V1 导出清单。每个目标首次全量，管理员确认整批导入后，后续仅导出新增版本。旧客户端的 `since`（包括 `last`）仍导出完整范围。[V1 兼容包导出指南](docs/v2-v1-compatible-nexus-export.md)
+`jayxuz/verdaccio-offline-sync:2.0.2`（`linux/amd64`）内含摄取插件 2.0.2。V2 管理页新增「导出 V1 兼容包」，归档包含 npm `.tgz` 和 V1 导出清单。每个目标首次全量，有权限的用户确认整批导入后，后续仅导出新增版本。旧客户端的 `since`（包括 `last`）仍导出完整范围。[V1 兼容包导出指南](docs/v2-v1-compatible-nexus-export.md)
 
 ## 2.0.0 升级说明
 
@@ -114,7 +114,7 @@ docker run -it --name verdaccio \
   -p 4873:4873 \
   -v $V_PATH/conf:/verdaccio/conf \
   -v $V_PATH/storage:/verdaccio/storage \
-  jayxuz/verdaccio-offline-sync:2.0.1
+  jayxuz/verdaccio-offline-sync:2.0.2
 ```
 
 目录结构：
@@ -408,7 +408,7 @@ find "$STORAGE_DIR" -type f -name package.json -exec jq -e empty {} +
 
 完整扫描两端 → 下载并交换库存 JSON → 对账 → 导出目标缺失制品 → 目标导入验证 → 返回回执 → 源端接收回执并返回确认 → 目标接收确认。同包同版本内容不一致时中止导出或导入，双方独有制品保留。反向同步时交换源端和目标端角色。
 
-原管理页的「V1 兼容归档」默认选中「普通全量导出」，可选择附带 `package.json`。启用管理员名单后可选择「导出 V1 兼容包」，归档仅包含 npm `.tgz` 和 V1 导出清单。每个目标首次全量，管理员确认整批导入后，下一次只导出新增版本。[设置、确认和故障处理](docs/v2-v1-compatible-nexus-export.md)
+原管理页的「V1 兼容归档」默认选中「普通全量导出」，可选择附带 `package.json`。默认可选择「导出 V1 兼容包」，需要有效的 Verdaccio 登录令牌。可配置 `standaloneSnapshotAdmins` 限制操作账号，或用空数组关闭该功能，归档仅包含 npm `.tgz` 和 V1 导出清单。每个目标首次全量，有权限的用户确认整批导入后，下一次只导出新增版本。[设置、确认和故障处理](docs/v2-v1-compatible-nexus-export.md)
 
 v1 包包含 `.export-manifest.json` 和包目录下的元数据、tgz；scoped 包使用 `@scope/name/` 嵌套目录。v2 包包含 `.mirror-manifest.json` 和按 SHA256 命名的 `blobs/`，必须通过镜像同步页面导入。
 

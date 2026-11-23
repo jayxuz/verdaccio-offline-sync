@@ -27,7 +27,7 @@ export interface IngestConfig {
   minTarballSize?: number;
   /** 缓存状态扫描快照有效期（秒），过期后下一次 /ingest/cache 请求触发后台重建（默认 600） */
   scanCacheTtlSeconds?: number;
-  /** Verdaccio usernames allowed to operate standalone snapshot exports. */
+  /** Optional username allowlist; omit for any authenticated user, [] to disable. */
   standaloneSnapshotAdmins?: string[];
 }
 

@@ -15,6 +15,7 @@ import { DifferentialPacker } from './differential-packer';
 import { SnapshotError, StandaloneSnapshots, snapshotTarget } from './standalone-snapshots';
 import { collectRangesFromPackument, selectRepairVersions } from './repair-planner';
 import { getWebUIHTML } from './web-ui';
+import { snapshotAccessPolicy } from './snapshot-access-policy';
 import {
   IngestConfig,
   IngestRequest,
@@ -160,10 +161,10 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
     app.use(mirrorRouter(this.storagePath, '/_/ingest/mirror', { registryURL: (this.config as any).mirrorRegistryURL || ((this.config as any).host ? 'http://' + (this.config as any).host : undefined) }, storage));
     const router = Router();
-    const snapshotAdmin = this.requireSnapshotAdmin(auth);
+    const snapshotUser = this.requireSnapshotUser(auth);
     const authorizeSnapshot: RequestHandler = (req, res, next) => {
       if (req.body?.mode === undefined) return next();
-      return snapshotAdmin(req, res, next);
+      return snapshotUser(req, res, next);
     };
 
     // 添加 JSON body 解析中间件
@@ -192,7 +193,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
     // 查询任务状态
     router.get('/ingest/status/:taskId', (req, res, next) => {
-      if (req.params.taskId.startsWith('snapshot-')) return snapshotAdmin(req, res, next);
+      if (req.params.taskId.startsWith('snapshot-')) return snapshotUser(req, res, next);
       return next();
     }, this.handleStatus.bind(this));
 
@@ -226,9 +227,9 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
     // 下载导出包
     router.get('/ingest/export/download/:exportId', this.handleExportDownload.bind(this));
-    router.get('/ingest/export/snapshot/:target', snapshotAdmin, this.handleSnapshotStatus.bind(this));
-    router.get('/ingest/export/snapshot/:target/:exportId/download', snapshotAdmin, this.handleSnapshotDownload.bind(this));
-    router.post('/ingest/export/snapshot/:target/:exportId/confirm', snapshotAdmin, this.handleSnapshotConfirm.bind(this));
+    router.get('/ingest/export/snapshot/:target', snapshotUser, this.handleSnapshotStatus.bind(this));
+    router.get('/ingest/export/snapshot/:target/:exportId/download', snapshotUser, this.handleSnapshotDownload.bind(this));
+    router.post('/ingest/export/snapshot/:target/:exportId/confirm', snapshotUser, this.handleSnapshotConfirm.bind(this));
 
     app.use('/_', router);
 
@@ -2118,23 +2119,25 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
 
   // ==================== 差分导出相关方法 ====================
 
-  private requireSnapshotAdmin(auth: { apiJWTmiddleware?(): RequestHandler } | undefined): RequestHandler {
-    const admins = (this.config as IngestConfig).standaloneSnapshotAdmins;
-    const authenticate = Array.isArray(admins) && admins.length > 0 ? auth?.apiJWTmiddleware?.() : undefined;
+  private requireSnapshotUser(auth: { apiJWTmiddleware?(): RequestHandler } | undefined): RequestHandler {
+    const policy = snapshotAccessPolicy((this.config as IngestConfig).standaloneSnapshotAdmins);
+    const authenticate = policy.mode !== 'disabled' && typeof auth?.apiJWTmiddleware === 'function'
+      ? auth.apiJWTmiddleware() : undefined;
     return (req, res, next) => {
-      if (!authenticate) {
-        res.status(403).json({ success: false, error: 'Standalone snapshot administrators are not configured' });
+      if (policy.mode === 'disabled' || typeof authenticate !== 'function') {
+        res.status(403).json({ success: false, error: 'Standalone snapshot export is disabled or Verdaccio authentication is unavailable' });
         return;
       }
       return authenticate(req, res, (error?: unknown) => {
         if (error) return next(error);
-        const username = (req as Request & { remote_user?: { name?: string } }).remote_user?.name;
-        if (!username) {
+        const remoteUser = (req as Request & { remote_user?: { name?: unknown; error?: unknown } }).remote_user;
+        const username = remoteUser?.name;
+        if (typeof username !== 'string' || username.trim() === '' || remoteUser?.error) {
           res.status(401).json({ success: false, error: 'Verdaccio authentication required' });
-        } else if (!admins?.includes(username)) {
-          res.status(403).json({ success: false, error: 'Standalone snapshot administrator required' });
+        } else if (policy.mode === 'allowlist' && !policy.users.has(username)) {
+          res.status(403).json({ success: false, error: 'Verdaccio user is not allowed to operate standalone snapshot exports' });
         } else {
-          res.locals.snapshotAdmin = username;
+          res.locals.snapshotUser = username;
           res.setHeader('Cache-Control', 'no-store');
           next();
         }
@@ -2179,7 +2182,7 @@ export default class IngestMiddleware extends pluginUtils.Plugin<IngestConfig> {
     try {
       const { target, exportId } = req.params;
       const { archiveSha256, outcome } = req.body ?? {};
-      const confirmation = await this.standaloneSnapshots.confirm(target, exportId, archiveSha256, outcome, res.locals.snapshotAdmin);
+      const confirmation = await this.standaloneSnapshots.confirm(target, exportId, archiveSha256, outcome, res.locals.snapshotUser);
       res.json({ success: true, confirmation });
     } catch (error) {
       this.respondSnapshotError(res, error);
