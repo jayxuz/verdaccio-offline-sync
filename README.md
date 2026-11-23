@@ -47,9 +47,9 @@
 - **完整性校验** - 下载后自动校验 tarball SHA-1，防止损坏包污染本地缓存；本地版本解析时同步校验文件完整性，从返回元数据中排除校验失败的版本，保留原文件供检查或修复
 - **完整性检查与修复** - 一键扫描"有元数据但零 tarball"的残缺包（analyze 预写元数据未确认下载、代理元数据缓存等场景产生），智能选取 latest、各大版本最新及被本地依赖命中的版本补下载，404 版本自动分类且支持失败重试
 
-## 2.0.2 Docker 镜像
+## 2.0.3 Docker 镜像
 
-`jayxuz/verdaccio-offline-sync:2.0.2`（`linux/amd64`）内含摄取插件 2.0.2。V2 管理页新增「导出 V1 兼容包」，归档包含 npm `.tgz` 和 V1 导出清单。每个目标首次全量，有权限的用户确认整批导入后，后续仅导出新增版本。旧客户端的 `since`（包括 `last`）仍导出完整范围。[V1 兼容包导出指南](docs/v2-v1-compatible-nexus-export.md)
+`jayxuz/verdaccio-offline-sync:2.0.3`（`linux/amd64`）内含摄取插件 2.0.3。V2 管理页新增「导出 V1 兼容包」，归档包含 npm `.tgz` 和 V1 导出清单。每个目标默认首次全量；V1 用户可先预览按旧导出时间估算的首次增量。确认整批导入后，后续按 SHA-256 快照导出增量。旧客户端的 `since`（包括 `last`）仍导出完整范围。[V1 兼容包导出指南](docs/v2-v1-compatible-nexus-export.md)
 
 ## 2.0.0 升级说明
 
@@ -114,7 +114,7 @@ docker run -it --name verdaccio \
   -p 4873:4873 \
   -v $V_PATH/conf:/verdaccio/conf \
   -v $V_PATH/storage:/verdaccio/storage \
-  jayxuz/verdaccio-offline-sync:2.0.2
+  jayxuz/verdaccio-offline-sync:2.0.3
 ```
 
 目录结构：

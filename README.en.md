@@ -47,9 +47,9 @@ English | [中文](./README.md)
 - **Integrity Verification** - Auto-validates tarball SHA-1 checksums after download to prevent corrupt packages from polluting local cache; verifies file integrity during local version resolution and excludes checksum failures from returned metadata while preserving the files for inspection and repair
 - **Integrity Check & Repair** - One-click scan for incomplete packages that have metadata but zero tarballs (produced by unconfirmed analysis pre-writes, proxy metadata caching, etc.), smartly selects latest, per-major newest, and dependency-hit versions to re-download, with 404 classification and retry support
 
-## Docker image 2.0.2
+## Docker image 2.0.3
 
-`jayxuz/verdaccio-offline-sync:2.0.2` (`linux/amd64`) includes ingest middleware 2.0.2. In the V2 management UI, **Export V1-Compatible Package** creates an archive of npm `.tgz` files and the V1 export manifest. Each target starts with a full export. After an authorized user confirms the entire import, subsequent exports include only new versions. Legacy requests with `since` (including `last`) still export the full scope. [V1-compatible export guide](docs/v2-v1-compatible-nexus-export.md)
+`jayxuz/verdaccio-offline-sync:2.0.3` (`linux/amd64`) includes ingest middleware 2.0.3. In the V2 management UI, **Export V1-Compatible Package** creates an archive of npm `.tgz` files and the V1 export manifest. Each target defaults to a full first export. Existing V1 users can preview an estimated first incremental export based on their legacy export time. Once the full import is confirmed, subsequent exports use SHA-256 snapshots. Legacy requests with `since` (including `last`) still export the full scope. [V1-compatible export guide](docs/v2-v1-compatible-nexus-export.md)
 
 ## Upgrading to 2.0.0
 
@@ -113,7 +113,7 @@ docker run -it --name verdaccio \
   -p 4873:4873 \
   -v $V_PATH/conf:/verdaccio/conf \
   -v $V_PATH/storage:/verdaccio/storage \
-  jayxuz/verdaccio-offline-sync:2.0.2
+  jayxuz/verdaccio-offline-sync:2.0.3
 ```
 
 Directory structure:

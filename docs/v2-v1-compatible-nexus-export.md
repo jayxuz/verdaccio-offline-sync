@@ -4,7 +4,7 @@
 
 ## 配置和使用
 
-从 2.0.2 起，启用摄取中间件即可在原管理页使用，无需设置 `standaloneSnapshotAdmins`。快照接口使用现有的 Verdaccio API 鉴权，匿名用户无法操作。
+V1 用户升级推荐使用 2.0.3 或更高版本。启用摄取中间件即可在原管理页使用，无需设置 `standaloneSnapshotAdmins`。快照接口使用现有的 Verdaccio API 鉴权，匿名用户无法操作。
 
 - 省略 `standaloneSnapshotAdmins`：所有通过 Verdaccio 鉴权的用户均可预览、创建、查看、下载和确认快照。
 - 配置非空用户名列表：仅名单内的已认证用户可操作。配置 `[]` 或无效值会隐藏入口并禁止快照操作。
